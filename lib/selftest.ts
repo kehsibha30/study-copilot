@@ -1,15 +1,13 @@
-import fs from "node:fs";
-import path from "node:path";
 import { z } from "zod";
 import { askJson, RefusalError, StepError } from "./claude";
 import { stage, verdict } from "./grade";
-import { DATA_DIR, appendUsage, listPapers, newId } from "./store";
+import { STALE_MS, appendUsage, listPapers, newId } from "./store";
+import { listDocs, loadDoc, saveDoc, updateDoc } from "./db";
 
 // "Test yourself": a short set of new questions on the ideas the student got wrong on their papers.
 // Every question is written by the AI and then solved blind by a second pass; a question the second
 // pass disagrees with is dropped before the student sees it.
 
-const DIR = path.join(DATA_DIR, "selftests");
 const WANT = 10;
 const BY_LEVEL: Record<number, number> = { 1: 3, 2: 4, 3: 3 };
 
@@ -31,6 +29,7 @@ export type SelfTest = {
   status: "building" | "ready" | "failed";
   startedAt: string;
   error?: string;
+  job?: string; // the background build holding the lock
   topics: TopicPick[];
   // A recheck: one new question for each of these ideas, some days after the student first got them right.
   recheck?: string[];
@@ -44,47 +43,28 @@ export type SelfTest = {
   cost: { usd: number; calls: number };
 };
 
-// ---------- storage: one file per set, on this computer ----------
+// ---------- storage: one row per set, table self_tests ----------
 
-function file(id: string) {
-  if (!/^[a-z0-9]{6,20}$/.test(id)) throw new Error("Bad self-test id");
-  return path.join(DIR, `${id}.json`);
+function validId(id: string) {
+  return /^[a-z0-9]{6,20}$/.test(id);
 }
 
-export function loadSelfTest(id: string): SelfTest | null {
-  try {
-    const f = file(id);
-    return fs.existsSync(f) ? (JSON.parse(fs.readFileSync(f, "utf8")) as SelfTest) : null;
-  } catch {
-    return null;
-  }
+export async function loadSelfTest(id: string): Promise<SelfTest | null> {
+  if (!validId(id)) return null;
+  return loadDoc<SelfTest>("self_tests", id);
 }
 
-function save(test: SelfTest) {
-  fs.mkdirSync(DIR, { recursive: true });
-  const f = file(test.id);
-  const tmp = `${f}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(test, null, 2));
-  fs.renameSync(tmp, f);
+async function save(test: SelfTest) {
+  await saveDoc("self_tests", test);
 }
 
-function update(id: string, change: (t: SelfTest) => void): SelfTest {
-  const test = loadSelfTest(id);
-  if (!test) throw new Error("Self-test not found");
-  change(test);
-  save(test);
-  return test;
+async function update(id: string, change: (t: SelfTest) => void): Promise<SelfTest> {
+  return (await updateDoc<SelfTest>("self_tests", id, change)).doc;
 }
 
-export function listSelfTests(): SelfTest[] {
-  if (!fs.existsSync(DIR)) return [];
-  const out: SelfTest[] = [];
-  for (const name of fs.readdirSync(DIR)) {
-    if (!name.endsWith(".json")) continue;
-    const t = loadSelfTest(name.replace(/\.json$/, ""));
-    if (t) out.push(t);
-  }
-  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+export async function listSelfTests(): Promise<SelfTest[]> {
+  const tests = await listDocs<SelfTest>("self_tests");
+  return tests.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 // ---------- what the questions are built from: the ideas that went wrong on the student's papers ----------
@@ -100,8 +80,8 @@ export type Source = {
   href: string; // the lesson on this idea
 };
 
-export function sources(): Source[] {
-  const papers = listPapers()
+export async function sources(): Promise<Source[]> {
+  const papers = (await listPapers())
     .filter((p) => !p.excluded && stage(p) === "done")
     .reverse(); // oldest first, so the latest paper has the last word
   const byName = new Map<string, Source>();
@@ -127,40 +107,42 @@ export function sources(): Source[] {
   return [...byName.values()];
 }
 
-function sourcesFor(topics: TopicPick[]): Source[] {
-  return sources().filter((s) => topics.some((t) => t.subject === s.subject && t.topic === s.topic));
+async function sourcesFor(topics: TopicPick[]): Promise<Source[]> {
+  return (await sources()).filter((s) => topics.some((t) => t.subject === s.subject && t.topic === s.topic));
 }
 
 // ---------- one build per set, never two ----------
 
-const g = globalThis as { __selfTestJobs?: Set<string> };
-const jobs = (g.__selfTestJobs ??= new Set<string>());
+// The lock is on the set in the database (job), so a double tap or a second server never builds it twice.
+function buildingNow(t: SelfTest) {
+  return Boolean(t.job) && Date.now() - Date.parse(t.startedAt) < STALE_MS;
+}
 
-export function startSelfTest(topics: TopicPick[], keep: TopicPick[] = []): SelfTest | null {
+export async function startSelfTest(topics: TopicPick[], keep: TopicPick[] = []): Promise<SelfTest | null> {
   const clean = topics.filter((t) => t && typeof t.subject === "string" && typeof t.topic === "string").slice(0, 12);
-  if (sourcesFor(clean).length === 0) return null;
+  if ((await sourcesFor(clean)).length === 0) return null;
   // A double tap on Start must not build (and pay for) the same set twice.
   const same = (t: SelfTest) => !t.recheck && JSON.stringify(t.topics) === JSON.stringify(clean);
-  const twin = listSelfTests().find((t) => same(t) && Date.now() - Date.parse(t.createdAt) < 60_000 && !t.submittedAt);
+  const twin = (await listSelfTests()).find((t) => same(t) && Date.now() - Date.parse(t.createdAt) < 60_000 && !t.submittedAt);
   if (twin) return twin;
   const extra = keep.filter((k) => !clean.some((t) => t.subject === k.subject && t.topic === k.topic)).slice(0, 2);
-  return create({ topics: clean, ...(extra.length ? { keep: extra } : {}) });
+  return await create({ topics: clean, ...(extra.length ? { keep: extra } : {}) });
 }
 
 // A recheck set: one new question for each idea that is due. A recheck that is waiting (not handed in, not
 // left out) is returned as it is, so a second tap or a second visit never builds or pays for another one.
-export function startRecheck(names: string[]): SelfTest | null {
-  const waiting = listSelfTests().find((t) => t.recheck && !t.submittedAt && !t.excluded);
+export async function startRecheck(names: string[]): Promise<SelfTest | null> {
+  const waiting = (await listSelfTests()).find((t) => t.recheck && !t.submittedAt && !t.excluded);
   if (waiting) return waiting;
   const wanted = new Set(names.map((n) => n.trim().toLowerCase()));
-  const ideas = sources().filter((s) => wanted.has(s.name.trim().toLowerCase())).slice(0, 6);
+  const ideas = (await sources()).filter((s) => wanted.has(s.name.trim().toLowerCase())).slice(0, 6);
   if (ideas.length === 0) return null;
   const topics: TopicPick[] = [];
   for (const s of ideas) if (!topics.some((t) => t.subject === s.subject && t.topic === s.topic)) topics.push({ subject: s.subject, topic: s.topic });
-  return create({ topics, recheck: ideas.map((s) => s.name) });
+  return await create({ topics, recheck: ideas.map((s) => s.name) });
 }
 
-function create(parts: Pick<SelfTest, "topics" | "recheck" | "keep">): SelfTest {
+async function create(parts: Pick<SelfTest, "topics" | "recheck" | "keep">): Promise<SelfTest> {
   const now = new Date().toISOString();
   const test: SelfTest = {
     id: newId(),
@@ -173,14 +155,14 @@ function create(parts: Pick<SelfTest, "topics" | "recheck" | "keep">): SelfTest 
     flagged: [],
     cost: { usd: 0, calls: 0 },
   };
-  save(test);
+  await save(test);
   return test;
 }
 
-export function restartSelfTest(id: string): SelfTest | null {
-  const test = loadSelfTest(id);
+export async function restartSelfTest(id: string): Promise<SelfTest | null> {
+  const test = await loadSelfTest(id);
   if (!test || test.status !== "failed") return test;
-  return update(id, (t) => {
+  return await update(id, (t) => {
     t.status = "building";
     t.startedAt = new Date().toISOString();
     delete t.error;
@@ -188,10 +170,12 @@ export function restartSelfTest(id: string): SelfTest | null {
 }
 
 // A build with no job behind it (the app was restarted) becomes "failed" so the screen offers Try again.
-export function markSelfTestIfStalled(test: SelfTest): SelfTest {
-  if (test.status !== "building" || jobs.has(test.id)) return test;
-  if (Date.now() - Date.parse(test.startedAt) < 20_000) return test;
-  return update(test.id, (t) => {
+export async function markSelfTestIfStalled(test: SelfTest): Promise<SelfTest> {
+  if (test.status !== "building" || buildingNow(test)) return test;
+  // Not yet claimed: give the background request time to start.
+  if (!test.job && Date.now() - Date.parse(test.startedAt) < 45_000) return test;
+  return await update(test.id, (t) => {
+    if (t.status !== "building" || buildingNow(t)) return;
     t.status = "failed";
     t.error = "This stopped partway. Nothing is lost.";
   });
@@ -240,14 +224,18 @@ function shuffle<T>(items: T[]): T[] {
 }
 
 export async function buildSelfTest(id: string): Promise<void> {
-  if (jobs.has(id)) return;
-  jobs.add(id);
+  const job = Math.random().toString(36).slice(2, 12);
+  const { doc: test, changed } = await updateDoc<SelfTest>("self_tests", id, (t) => {
+    if (t.status !== "building" || buildingNow(t)) return false;
+    t.job = job;
+    t.startedAt = new Date().toISOString();
+    return true;
+  });
+  if (!changed) return;
   try {
-    const test = loadSelfTest(id);
-    if (!test || test.status !== "building") return;
     try {
       const questions = await writeQuestions(test);
-      update(id, (t) => {
+      await update(id, (t) => {
         t.questions = questions;
         t.answers = {};
         t.flagged = [];
@@ -257,31 +245,33 @@ export async function buildSelfTest(id: string): Promise<void> {
     } catch (error) {
       const known = error instanceof StepError;
       if (!known) console.error(`[self-test ${id}] build failed`, error);
-      update(id, (t) => {
+      await update(id, (t) => {
         t.status = "failed";
         t.error = known ? (error as Error).message : "Something went wrong on our side. Try again.";
       });
     }
   } finally {
-    jobs.delete(id);
+    await update(id, (t) => {
+      if (t.job === job) delete t.job;
+    }).catch((error) => console.error(`[self-test ${id}] could not release the build lock`, error));
   }
 }
 
 async function writeQuestions(test: SelfTest): Promise<TestQuestion[]> {
   const wanted = new Set((test.recheck ?? []).map((n) => n.trim().toLowerCase()));
-  const ideas = (test.recheck ? sources().filter((s) => wanted.has(s.name.trim().toLowerCase())) : sourcesFor(test.topics)).slice(0, 6);
+  const ideas = (test.recheck ? (await sources()).filter((s) => wanted.has(s.name.trim().toLowerCase())) : await sourcesFor(test.topics)).slice(0, 6);
   if (ideas.length === 0) throw new StepError("There is nothing to test on these topics any more.");
   const ideaKeys = new Set(ideas.map((s) => s.name.trim().toLowerCase()));
   // Questions he has already had on these ideas, so a new set or a recheck is never one he has seen.
-  const seen = listSelfTests()
+  const seen = (await listSelfTests())
     .filter((t) => t.id !== test.id)
     .flatMap((t) => t.questions.filter((q) => !q.keep && ideaKeys.has(q.concept.trim().toLowerCase())).map((q) => q.text))
     .slice(0, 30);
   const target = test.recheck ? ideas.length : WANT;
   const has = (list: TestQuestion[], name: string) => list.some((k) => k.concept === name);
   const names = new Map(ideas.map((s) => [s.name.trim().toLowerCase(), s.name]));
-  const onCost = (usd: number) =>
-    update(test.id, (t) => {
+  const onCost = async (usd: number) =>
+    await update(test.id, (t) => {
       t.cost.usd = Number((t.cost.usd + usd).toFixed(5));
       t.cost.calls += 1;
     });
@@ -383,7 +373,7 @@ Give only the numbers.`,
   if (kept.length === 0) throw new StepError("We could not write questions that passed our own check. Try again.");
 
   if (test.recheck) {
-    appendUsage({ at: new Date().toISOString(), paperId: `selftest:${test.id}`, step: "recheck-built", wanted: ideas.length, used: kept.length, usd: 0 });
+    await appendUsage({ at: new Date().toISOString(), paperId: `selftest:${test.id}`, step: "recheck-built", wanted: ideas.length, used: kept.length, usd: 0 });
     return shuffle(kept);
   }
 
@@ -397,7 +387,7 @@ Give only the numbers.`,
   }
   chosen.push(...spare.slice(0, Math.max(0, WANT - chosen.length)));
   const extra = await keepQuestions(test, [...chosen.map((c) => c.text), ...seen], onCost);
-  appendUsage({ at: new Date().toISOString(), paperId: `selftest:${test.id}`, step: "selftest-built", written: kept.length, used: chosen.length, kept: extra.length, usd: 0 });
+  await appendUsage({ at: new Date().toISOString(), paperId: `selftest:${test.id}`, step: "selftest-built", written: kept.length, used: chosen.length, kept: extra.length, usd: 0 });
   return [...chosen, ...extra].sort((a, b) => a.level - b.level);
 }
 
@@ -406,7 +396,7 @@ Give only the numbers.`,
 async function keepQuestions(test: SelfTest, taken: string[], onCost: (usd: number) => void): Promise<TestQuestion[]> {
   const topics = (test.keep ?? []).slice(0, 2);
   if (topics.length === 0) return [];
-  const papers = listPapers().filter((p) => !p.excluded && stage(p) === "done");
+  const papers = (await listPapers()).filter((p) => !p.excluded && stage(p) === "done");
   const samples = topics.map((t) => {
     const qs = papers.flatMap((p) => (p.questions ?? []).filter((q) => (q.subject || q.section) === t.subject && q.topic === t.topic && !q.hasFigure && verdict(p, q) === "correct"));
     return { topic: t, texts: qs.slice(0, 3).map((q) => q.text) };
@@ -493,8 +483,8 @@ export type TestAct =
   | { type: "flag"; index: number }
   | { type: "exclude"; excluded: boolean };
 
-export function actSelfTest(id: string, a: TestAct): SelfTest {
-  return update(id, (t) => {
+export async function actSelfTest(id: string, a: TestAct): Promise<SelfTest> {
+  return await update(id, (t) => {
     if (a.type === "exclude") {
       if (a.excluded) t.excluded = true;
       else delete t.excluded;
@@ -552,9 +542,9 @@ export type SelfTestView = {
   result: { right: number; counted: number; next: { name: string; href: string } | null } | null;
 };
 
-export function selfTestView(t: SelfTest): SelfTestView {
+export async function selfTestView(t: SelfTest): Promise<SelfTestView> {
   const done = Boolean(t.submittedAt);
-  const lessons = new Map(sources().map((s) => [s.name.trim().toLowerCase(), s.href]));
+  const lessons = new Map((await sources()).map((s) => [s.name.trim().toLowerCase(), s.href]));
   const questions = t.questions.map((q, i) => {
     const chosen = t.answers[String(i)];
     return {

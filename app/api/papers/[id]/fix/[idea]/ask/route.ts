@@ -1,6 +1,9 @@
 import { RefusalError, StepError } from "@/lib/claude";
 import { askDoubt, fixView } from "@/lib/fix";
 
+// This route can wait on the AI; the host must not cut it short.
+export const maxDuration = 300;
+
 export async function POST(request: Request, ctx: RouteContext<"/api/papers/[id]/fix/[idea]/ask">) {
   const { id, idea } = await ctx.params;
   let body: { question?: unknown };

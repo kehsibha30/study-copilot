@@ -3,11 +3,14 @@ import { RefusalError, StepError } from "@/lib/claude";
 import { flagTopicDoubt } from "@/lib/doubts";
 import { askTopic, topicView } from "@/lib/topic";
 
+// This route can wait on the AI; the host must not cut it short.
+export const maxDuration = 300;
+
 // Looking at a topic never starts (or pays for) anything.
 export async function GET(request: Request) {
   await connection();
   const url = new URL(request.url);
-  const view = topicView(url.searchParams.get("s") ?? "", url.searchParams.get("t") ?? "");
+  const view = await topicView(url.searchParams.get("s") ?? "", url.searchParams.get("t") ?? "");
   if (!view) return Response.json({ error: "We could not find that topic." }, { status: 404 });
   return Response.json({ topic: view });
 }
@@ -23,8 +26,8 @@ export async function POST(request: Request) {
   if (typeof body.flag === "string") {
     const subject = String(body.subject ?? "");
     const topic = String(body.topic ?? "");
-    if (!flagTopicDoubt(subject, topic, body.flag)) return Response.json({ error: "We could not find that answer." }, { status: 404 });
-    return Response.json({ topic: topicView(subject, topic) });
+    if (!await flagTopicDoubt(subject, topic, body.flag)) return Response.json({ error: "We could not find that answer." }, { status: 404 });
+    return Response.json({ topic: await topicView(subject, topic) });
   }
   try {
     const view = await askTopic(String(body.subject ?? ""), String(body.topic ?? ""), String(body.question ?? ""));

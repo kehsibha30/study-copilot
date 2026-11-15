@@ -1,20 +1,28 @@
-import fs from "node:fs";
 import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
 import { askJson, RefusalError, StepError } from "./claude";
 import { norm } from "./grade";
 import { pageOf } from "./pages";
-import { filePath, listPapers, loadPaper, updatePaper, type Idea, type KeyEntry, type MistakeNote, type Paper, type Question, type StepName } from "./store";
+import { appUrl, INTERNAL_HEADER, internalToken } from "./auth";
+import { STALE_MS, listPapers, loadPaper, readUpload, updatePaper, updatePaperIf, type Idea, type KeyEntry, type MistakeNote, type Paper, type Question, type StepName } from "./store";
 
 type Content = Anthropic.Beta.BetaContentBlockParam[];
 
 // ---------- one background job per paper, never two ----------
+// The lock lives on the paper in the database (running.job), not in memory: on the hosted version each
+// request can land on a different server, so only the database knows whether a step is in progress.
+// Each step is its own request (the host stops a request after 5 minutes; the longest step seen is about
+// 3), and the next step is started by a call back to /continue.
 
-const g = globalThis as { __paperJobs?: Set<string> };
-const jobs = (g.__paperJobs ??= new Set<string>());
 
-export function isRunning(id: string) {
-  return jobs.has(id);
+export function isRunning(p: Paper) {
+  return Boolean(p.running?.job) && Date.now() - Date.parse(p.running!.startedAt) < STALE_MS;
+}
+
+// Shows "starting" on the screen straight away, before the background job has claimed the paper.
+export function queueNext(p: Paper) {
+  const step = nextStep(p);
+  if (step && !isRunning(p)) p.running = { step, startedAt: new Date().toISOString(), label: LABELS[step] };
 }
 
 export function nextStep(p: Paper): StepName | null {
@@ -32,62 +40,76 @@ const LABELS: Record<StepName, string> = {
   analyse: "Grouping your mistakes by idea",
 };
 
-// Does whatever the paper needs next, one step at a time, and records a clear error if a step fails.
-// Safe to call any number of times: a second call while one is running does nothing.
+// Does the one step the paper needs next and records a clear error if it fails, then hands the step after
+// that to a fresh request. Safe to call any number of times: only the call that claims the paper runs.
 export async function advance(id: string): Promise<void> {
-  if (jobs.has(id)) return;
-  jobs.add(id);
+  const job = Math.random().toString(36).slice(2, 12);
+  let step: StepName | null = null;
+  const { paper: claimed, changed } = await updatePaperIf(id, (p) => {
+    const next = nextStep(p);
+    if (!next || isRunning(p)) return false;
+    delete p.error;
+    p.running = { step: next, startedAt: new Date().toISOString(), label: LABELS[next], job };
+    step = next;
+    return true;
+  });
+  if (!changed || !step) return;
+  const current: StepName = step;
   try {
-    updatePaper(id, (p) => {
-      delete p.error;
+    if (current === "read") await readPaper(claimed);
+    else if (current === "solve") await solvePaper(claimed);
+    else if (current === "tag") await tagPaper(claimed);
+    else await analysePaper(claimed);
+  } catch (error) {
+    const known = error instanceof StepError;
+    if (!known) console.error(`[paper ${id}] step ${current} failed`, error);
+    await updatePaper(id, (p) => {
+      if (p.running?.job === job) delete p.running;
+      p.error = {
+        step: current,
+        at: new Date().toISOString(),
+        message: known
+          ? (error as Error).message
+          : "Something went wrong on our side. Your paper is saved. Continue to try again.",
+      };
     });
-    for (;;) {
-      const paper = loadPaper(id);
-      if (!paper) return;
-      const step = nextStep(paper);
-      if (!step) break;
-      updatePaper(id, (p) => {
-        p.running = { step, startedAt: new Date().toISOString(), label: LABELS[step] };
-      });
-      try {
-        if (step === "read") await readPaper(paper);
-        else if (step === "solve") await solvePaper(paper);
-        else if (step === "tag") await tagPaper(paper);
-        else await analysePaper(paper);
-      } catch (error) {
-        const known = error instanceof StepError;
-        if (!known) console.error(`[paper ${id}] step ${step} failed`, error);
-        updatePaper(id, (p) => {
-          delete p.running;
-          p.error = {
-            step,
-            at: new Date().toISOString(),
-            message: known
-              ? (error as Error).message
-              : "Something went wrong on our side. Your paper is saved. Continue to try again.",
-          };
-        });
-        return;
-      }
-    }
-    updatePaper(id, (p) => {
-      delete p.running;
-    });
-  } finally {
-    jobs.delete(id);
+    return;
   }
-  // Answers may have been submitted in the instant between the last check and the job ending.
-  const after = loadPaper(id);
-  if (after && !after.error && nextStep(after)) return advance(id);
+  const done = await updatePaper(id, (p) => {
+    if (p.running?.job === job) delete p.running;
+    queueNext(p);
+  });
+  if (nextStep(done)) await chain(id);
 }
 
-// A paper that needs work but has no job (the app was restarted mid-way) is marked as stopped,
-// so the screen shows "Continue" instead of a spinner that never ends. Viewing never starts work.
-export function markIfStalled(paper: Paper): Paper {
-  if (paper.error || !nextStep(paper) || isRunning(paper.id)) return paper;
+// Starts the next step in a new request, so no single request runs past the host's time limit.
+async function chain(id: string) {
+  const base = appUrl();
+  try {
+    const res = await fetch(`${base}/api/papers/${id}/continue`, {
+      method: "POST",
+      headers: { [INTERNAL_HEADER]: await internalToken() },
+    });
+    if (!res.ok) throw new Error(`continue answered ${res.status}`);
+  } catch (error) {
+    console.error(`[paper ${id}] could not start the next step via ${base}`, error);
+    await updatePaper(id, (p) => {
+      if (p.running?.job) return;
+      delete p.running;
+      p.error = { step: nextStep(p) ?? "read", at: new Date().toISOString(), message: "This stopped partway. Your paper and answers are saved." };
+    });
+  }
+}
+
+// A paper that needs work but has no live job is marked as stopped, so the screen shows "Continue"
+// instead of a spinner that never ends. Viewing never starts work.
+export async function markIfStalled(paper: Paper): Promise<Paper> {
+  if (paper.error || !nextStep(paper) || isRunning(paper)) return paper;
   const since = Date.parse(paper.running?.startedAt ?? paper.createdAt);
-  if (Date.now() - since < 20_000) return paper;
-  return updatePaper(paper.id, (p) => {
+  // A step that was queued but never claimed: give the background request time to start.
+  if (Date.now() - since < 45_000) return paper;
+  return await updatePaper(paper.id, (p) => {
+    if (p.error || !nextStep(p) || isRunning(p)) return;
     const step = nextStep(p) ?? "read";
     delete p.running;
     p.error = { step, at: new Date().toISOString(), message: "This stopped partway. Your paper and answers are saved." };
@@ -98,9 +120,10 @@ export function markIfStalled(paper: Paper): Paper {
 
 // cache: true marks the paper for reuse by later calls of the same kind. It costs a little more on the
 // first call, so it is only switched on where several calls follow each other (the solving step).
-function paperBlocks(paper: Paper, cache = false): Content {
-  const blocks: Content = paper.files.map((f) => {
-    const data = fs.readFileSync(filePath(paper.id, f.stored)).toString("base64");
+async function paperBlocks(paper: Paper, cache = false): Promise<Content> {
+  const pages = await Promise.all(paper.files.map((f) => readUpload(paper.id, f.stored)));
+  const blocks: Content = paper.files.map((f, i) => {
+    const data = pages[i].toString("base64");
     if (f.mime === "application/pdf") {
       return { type: "document", source: { type: "base64", media_type: "application/pdf", data } };
     }
@@ -172,7 +195,7 @@ async function readPaper(paper: Paper) {
     step: "read",
     schema: ReadSchema,
     effort: "medium",
-    content: [...paperBlocks(paper), { type: "text", text: READ_PROMPT }],
+    content: [...(await paperBlocks(paper)), { type: "text", text: READ_PROMPT }],
   });
 
   const seen = new Set<number>();
@@ -206,7 +229,7 @@ async function readPaper(paper: Paper) {
     if (q && q.options.some((o) => o.label === label)) printedKey[String(k.n)] = label;
   }
 
-  updatePaper(paper.id, (p) => {
+  await updatePaper(paper.id, (p) => {
     p.title = out.title.trim() || p.title;
     p.questions = questions;
     p.printedKey = printedKey;
@@ -234,10 +257,10 @@ const MarksSchema = z.object({ marks: z.array(z.object({ n: z.number(), answer: 
 // Looks at the paper only for the student's own marks, and fills in the ones found where no answer is chosen yet.
 // Returns how many it found. Never solves a question.
 export async function lookForMarks(id: string): Promise<number> {
-  const paper = loadPaper(id);
+  const paper = await loadPaper(id);
   if (!paper?.questions) throw new StepError("This paper is still being read.");
   if (paper.answersSubmitted) return 0;
-  updatePaper(id, (p) => {
+  await updatePaper(id, (p) => {
     p.marksLooks = (p.marksLooks ?? 0) + 1;
   });
   const mcq = paper.questions.filter((q) => q.type === "mcq");
@@ -248,7 +271,7 @@ export async function lookForMarks(id: string): Promise<number> {
     schema: MarksSchema,
     effort: "medium",
     content: [
-      ...paperBlocks(paper),
+      ...(await paperBlocks(paper)),
       {
         type: "text",
         text: `This is a test paper a student may have marked their answers on: a tick, a circle, a filled bubble, a handwritten letter or number, or highlighter pen over one option.
@@ -262,7 +285,7 @@ Leave out every question with no mark, with more than one option marked, or wher
     ],
   });
   let found = 0;
-  updatePaper(id, (p) => {
+  await updatePaper(id, (p) => {
     for (const m of out.marks) {
       const q = p.questions?.find((x) => x.n === m.n);
       const label = norm(m.answer);
@@ -313,15 +336,15 @@ async function solvePaper(paper: Paper) {
   if (toSolve.length > 0) {
     const chunks: Question[][] = [];
     for (let i = 0; i < toSolve.length; i += 20) chunks.push(toSolve.slice(i, i + 20));
-    const blocks = paperBlocks(paper, true);
+    const blocks = await paperBlocks(paper, true);
     const tasks = chunks.flatMap((qs, i) => [
       { qs, pass: "a" as const, name: `solve-a-${i + 1}`, approach: SOLVE_A },
       { qs, pass: "b" as const, name: `solve-b-${i + 1}`, approach: SOLVE_B },
     ]);
     // Parts finished on an earlier attempt are kept; only the missing ones are run.
     const parts: Record<string, Record<string, string>> = { ...(paper.solveParts ?? {}) };
-    const progress = () =>
-      updatePaper(paper.id, (p) => {
+    const progress = async () =>
+      await updatePaper(paper.id, (p) => {
         p.solveParts = parts;
         if (p.running) {
           p.running.label = `Solving each question twice to be sure (${Object.keys(parts).length} of ${tasks.length} parts done)`;
@@ -349,7 +372,7 @@ async function solvePaper(paper: Paper) {
         console.error(`[paper ${paper.id}] ${t.name} declined (${error.category ?? "no category"})`);
       }
       parts[t.name] = got;
-      progress();
+      await progress();
     };
     const queue = tasks.filter((t) => !parts[t.name]);
     // The first call goes alone so the paper is stored once; the rest then reuse it at a tenth of the price.
@@ -372,7 +395,7 @@ async function solvePaper(paper: Paper) {
     }
   }
 
-  updatePaper(paper.id, (p) => {
+  await updatePaper(paper.id, (p) => {
     p.key = key;
   });
 }
@@ -386,15 +409,15 @@ const TagSchema = z.object({
 });
 
 // Papers that count towards the student's record (not this one, not test runs).
-function otherPapers(id: string): Paper[] {
-  return listPapers().filter((p) => p.id !== id && !p.excluded);
+async function otherPapers(id: string): Promise<Paper[]> {
+  return (await listPapers()).filter((p) => p.id !== id && !p.excluded);
 }
 
 // Works from the question text alone, so it does not pay to re-read the paper.
 async function tagPaper(paper: Paper) {
   const mcq = (paper.questions ?? []).filter((q) => q.type === "mcq");
   const known = new Map<string, Map<string, string>>(); // subject -> lower-case topic -> topic as first written
-  for (const other of otherPapers(paper.id)) {
+  for (const other of await otherPapers(paper.id)) {
     for (const q of other.questions ?? []) {
       if (!q.subject || !q.topic) continue;
       const topics = known.get(q.subject) ?? new Map<string, string>();
@@ -437,7 +460,7 @@ ${list}`,
       console.error(`[paper ${paper.id}] tagging declined (${error.category ?? "no category"})`);
     }
   }
-  updatePaper(paper.id, (p) => {
+  await updatePaper(paper.id, (p) => {
     for (const q of p.questions ?? []) {
       const t = tags.get(q.n);
       if (t) {
@@ -547,7 +570,7 @@ async function ownAnswers(paper: Paper, wrong: Question[]): Promise<Map<number, 
         step: `own-answer-${i / 20 + 1}`,
         schema: SolveSchema,
         effort: "high",
-        content: [...paperBlocks(paper), { type: "text", text: solvePrompt(qs, SOLVE_A) }],
+        content: [...(await paperBlocks(paper)), { type: "text", text: solvePrompt(qs, SOLVE_A) }],
       });
       for (const a of out.answers) {
         const label = norm(a.answer);
@@ -582,7 +605,7 @@ async function analysePaper(paper: Paper) {
   }
 
   if (wrong.length === 0) {
-    updatePaper(paper.id, (p) => {
+    await updatePaper(paper.id, (p) => {
       p.notes = setAside;
       p.ideas = [];
       p.analysed = true;
@@ -591,7 +614,7 @@ async function analysePaper(paper: Paper) {
   }
 
   // Idea names from earlier papers, so the same weak spot carries the same name every time it comes up.
-  const earlier = [...new Set(otherPapers(paper.id).flatMap((o) => (o.ideas ?? []).map((i) => i.name)))]
+  const earlier = [...new Set((await otherPapers(paper.id)).flatMap((o) => (o.ideas ?? []).map((i) => i.name)))]
     .filter((name) => name !== "Other mistakes")
     .slice(0, 60);
 
@@ -606,7 +629,7 @@ async function analysePaper(paper: Paper) {
     schema: AnalyseSchema,
     effort: "medium",
     content: [
-      ...paperBlocks(paper),
+      ...(await paperBlocks(paper)),
       {
         type: "text",
         text: `A student took the paper above and got these questions wrong:
@@ -653,7 +676,7 @@ ${earlier.length ? `Idea names already used on this student's earlier papers:\n$
   if (left.length) ideas.push({ name: "Other mistakes", explain: "These did not fit one clear idea.", questions: left });
   ideas.sort((a, b) => b.questions.length - a.questions.length);
 
-  updatePaper(paper.id, (p) => {
+  await updatePaper(paper.id, (p) => {
     p.notes = [...notes, ...setAside];
     p.ideas = ideas;
     p.analysed = true;

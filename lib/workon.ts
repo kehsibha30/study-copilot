@@ -88,8 +88,8 @@ function dayStart(iso: string, plusDays = 0): Date {
 
 type Event = { at: string; kind: "wrong" | "lesson_pass" | "lesson_miss" | "set_pass" | "set_miss" };
 
-export function workOn(now = Date.now()): WorkOn {
-  const all = listPapers().filter((p) => stage(p) === "done");
+export async function workOn(now = Date.now()): Promise<WorkOn> {
+  const all = (await listPapers()).filter((p) => stage(p) === "done");
   const papers = all.filter((p) => !p.excluded).reverse(); // oldest first, so the latest paper has the last word
 
   type TopicAcc = { right: number; counted: number; skipped: number; paperIds: Set<string>; byPaper: TopicRow["byPaper"] };
@@ -179,7 +179,7 @@ export function workOn(now = Date.now()): WorkOn {
   }
 
   // New questions answered without help, on sets and rechecks.
-  const sets = listSelfTests().filter((t) => !t.excluded);
+  const sets = (await listSelfTests()).filter((t) => !t.excluded);
   const keepLast = new Map<string, { at: string; right: boolean }>();
   for (const t of sets) {
     activity.push(t.createdAt);
@@ -205,7 +205,7 @@ export function workOn(now = Date.now()): WorkOn {
     for (const [key, s] of tally) concepts.get(key)?.events.push({ at: t.submittedAt, kind: s.right === s.total ? "set_pass" : "set_miss" });
   }
 
-  const doubts = listTopicDoubts();
+  const doubts = await listTopicDoubts();
   for (const d of doubts) {
     activity.push(d.at);
     answersGiven++;
@@ -321,7 +321,7 @@ export function workOn(now = Date.now()): WorkOn {
     next: todo ? { name: todo.name, href: todo.href, started: todo.state === "started" } : null,
     focus: open.slice(0, 3),
     due,
-    recheckWaiting: listSelfTests().find((t) => t.recheck && !t.submittedAt && !t.excluded && t.status !== "failed")?.id ?? null,
+    recheckWaiting: (await listSelfTests()).find((t) => t.recheck && !t.submittedAt && !t.excluded && t.status !== "failed")?.id ?? null,
     checking,
     held,
     ideas: [...open, ...due.filter((c) => !isOpen(c)), ...checking, ...held.filter((c) => !c.due)],

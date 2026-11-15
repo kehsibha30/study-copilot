@@ -1,13 +1,16 @@
 import { after } from "next/server";
 import { norm } from "@/lib/grade";
-import { advance } from "@/lib/pipeline";
+import { advance, queueNext } from "@/lib/pipeline";
 import { loadPaper, updatePaper } from "@/lib/store";
 import { paperView } from "@/lib/view";
+
+// Checking the paper can take a few minutes; the host must not cut it short.
+export const maxDuration = 300;
 
 // Saves the student's answers. With submit: true it also starts the checking, once.
 export async function POST(request: Request, ctx: RouteContext<"/api/papers/[id]/answers">) {
   const { id } = await ctx.params;
-  const paper = loadPaper(id);
+  const paper = await loadPaper(id);
   if (!paper) return Response.json({ error: "We could not find that paper." }, { status: 404 });
   if (!paper.questions) return Response.json({ error: "This paper is still being read." }, { status: 409 });
 
@@ -28,9 +31,12 @@ export async function POST(request: Request, ctx: RouteContext<"/api/papers/[id]
     if (label && q.options.some((o) => o.label === label)) clean[String(q.n)] = label;
   }
 
-  const saved = updatePaper(id, (p) => {
+  const saved = await updatePaper(id, (p) => {
     p.answers = clean;
-    if (body.submit) p.answersSubmitted = true;
+    if (body.submit) {
+      p.answersSubmitted = true;
+      queueNext(p);
+    }
   });
   if (body.submit) after(() => advance(id));
   return Response.json({ paper: paperView(saved) });

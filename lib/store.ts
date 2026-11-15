@@ -1,9 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
+import { BUCKET, db, listDocs, loadDoc, saveDoc, updateDoc } from "./db";
 
-// All data stays on this computer, under study-copilot/data (not in source control).
-export const DATA_DIR = path.join(process.cwd(), "data");
-const PAPERS_DIR = path.join(DATA_DIR, "papers");
+// All data lives in the study copilot's own Supabase project (tables papers, self_tests,
+// topic_doubts, usage; uploaded pages in the private "papers" bucket). See supabase/schema.sql.
 
 export type Option = { label: string; text: string };
 
@@ -63,6 +61,7 @@ export type Cursor =
 export type Fix = {
   status: "building" | "ready" | "failed";
   startedAt: string;
+  job?: string; // the background build holding the lock (see lib/fix.ts)
   error?: string;
   anchor: number;
   steps: FixStep[];
@@ -108,78 +107,95 @@ export type Paper = {
   fixes?: Record<string, Fix>; // keyed by the idea's position in `ideas`
 
   // Background work bookkeeping.
-  running?: { step: StepName; startedAt: string; label: string };
+  running?: { step: StepName; startedAt: string; label: string; job?: string };
   error?: { step: StepName; message: string; at: string };
 
   cost: { usd: number; calls: number };
 };
 
-function ensureDirs() {
-  fs.mkdirSync(PAPERS_DIR, { recursive: true });
+// Longer than any background step can run on the host (5 minutes), so a lock older than this
+// belongs to a job that died and may be taken over.
+export const STALE_MS = 330_000;
+
+export function validId(id: string) {
+  return /^[a-z0-9]{6,20}$/.test(id);
 }
 
-function paperDir(id: string) {
-  if (!/^[a-z0-9]{6,20}$/.test(id)) throw new Error("Bad paper id");
-  return path.join(PAPERS_DIR, id);
+function objectPath(id: string, stored: string) {
+  if (!validId(id)) throw new Error("Bad paper id");
+  const name = stored.split("/").pop() ?? stored;
+  return `${id}/${name}`;
 }
 
-export function filePath(id: string, stored: string) {
-  return path.join(paperDir(id), path.basename(stored));
+export async function loadPaper(id: string): Promise<Paper | null> {
+  if (!validId(id)) return null;
+  return loadDoc<Paper>("papers", id);
 }
 
-export function loadPaper(id: string): Paper | null {
-  let dir: string;
-  try {
-    dir = paperDir(id);
-  } catch {
-    return null;
-  }
-  const file = path.join(dir, "paper.json");
-  if (!fs.existsSync(file)) return null;
-  return JSON.parse(fs.readFileSync(file, "utf8")) as Paper;
+export async function savePaper(paper: Paper) {
+  await saveDoc("papers", paper, { file_hash: paper.fileHash });
 }
 
-export function savePaper(paper: Paper) {
-  ensureDirs();
-  const dir = paperDir(paper.id);
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, "paper.json");
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(paper, null, 2));
-  fs.renameSync(tmp, file);
+// Read-modify-write that cannot interleave with another save (see updateDoc).
+export async function updatePaper(id: string, change: (p: Paper) => void): Promise<Paper> {
+  return (await updateDoc<Paper>("papers", id, change)).doc;
 }
 
-// Read-modify-write in one synchronous step so two background updates cannot interleave.
-export function updatePaper(id: string, change: (p: Paper) => void): Paper {
-  const paper = loadPaper(id);
-  if (!paper) throw new Error("Paper not found");
-  change(paper);
-  savePaper(paper);
-  return paper;
+// Like updatePaper, but `change` can return false to leave the paper untouched. Returns whether it saved.
+export async function updatePaperIf(id: string, change: (p: Paper) => boolean): Promise<{ paper: Paper; changed: boolean }> {
+  const r = await updateDoc<Paper>("papers", id, change);
+  return { paper: r.doc, changed: r.changed };
 }
 
-export function listPapers(): Paper[] {
-  ensureDirs();
-  const out: Paper[] = [];
-  for (const id of fs.readdirSync(PAPERS_DIR)) {
-    const p = loadPaper(id);
-    if (p) out.push(p);
-  }
-  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+export async function listPapers(): Promise<Paper[]> {
+  const papers = await listDocs<Paper>("papers");
+  return papers.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export function newId() {
   return Math.random().toString(36).slice(2, 10).padEnd(8, "0");
 }
 
-export function saveUpload(id: string, stored: string, bytes: Buffer) {
-  ensureDirs();
-  const dir = paperDir(id);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, path.basename(stored)), bytes);
+// The browser uploads pages straight to storage with these one-time links (Vercel refuses request
+// bodies over 4.5 MB, and a few phone photos are more than that).
+export async function uploadLink(id: string, stored: string): Promise<{ url: string; path: string }> {
+  const { data, error } = await db().storage.from(BUCKET).createSignedUploadUrl(objectPath(id, stored), { upsert: true });
+  if (error || !data) throw new Error(`Could not prepare upload: ${error?.message ?? "no link"}`);
+  return { url: data.signedUrl, path: data.path };
 }
 
-export function appendUsage(row: Record<string, unknown>) {
-  ensureDirs();
-  fs.appendFileSync(path.join(DATA_DIR, "usage.jsonl"), JSON.stringify(row) + "\n");
+export async function saveUpload(id: string, stored: string, bytes: Buffer, mime: string) {
+  const { error } = await db().storage.from(BUCKET).upload(objectPath(id, stored), bytes, { contentType: mime, upsert: true });
+  if (error) throw new Error(`Could not store ${stored}: ${error.message}`);
+}
+
+// Uploaded pages never change, so each one is fetched from storage once per server instance.
+const g = globalThis as { __pageBytes?: Map<string, Buffer> };
+const pageBytes = (g.__pageBytes ??= new Map<string, Buffer>());
+
+export async function readUpload(id: string, stored: string): Promise<Buffer> {
+  const key = objectPath(id, stored);
+  const cached = pageBytes.get(key);
+  if (cached) return cached;
+  const { data, error } = await db().storage.from(BUCKET).download(key);
+  if (error || !data) throw new Error(`Could not read ${stored}: ${error?.message ?? "missing"}`);
+  const bytes = Buffer.from(await data.arrayBuffer());
+  if (pageBytes.size > 60) pageBytes.clear();
+  pageBytes.set(key, bytes);
+  return bytes;
+}
+
+// Every paid AI call, with its cost. A failed write is logged loudly but never stops the student's work.
+export async function appendUsage(row: Record<string, unknown>) {
+  const { error } = await db()
+    .from("usage")
+    .insert({
+      at: typeof row.at === "string" ? row.at : new Date().toISOString(),
+      paper_id: typeof row.paperId === "string" ? row.paperId : null,
+      step: typeof row.step === "string" ? row.step : null,
+      model: typeof row.model === "string" ? row.model : null,
+      usd: typeof row.usd === "number" ? row.usd : null,
+      row,
+    });
+  if (error) console.error("[usage] could not record a cost row", error.message, row);
 }

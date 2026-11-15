@@ -1,10 +1,13 @@
 import { act, fixView, type Act } from "@/lib/fix";
 import { loadPaper } from "@/lib/store";
 
+// This route can wait on the AI; the host must not cut it short.
+export const maxDuration = 300;
+
 // One move in the walkthrough: choose an option, ask for the hint, say "I don't know", go on, retry a question, or flag it.
 export async function POST(request: Request, ctx: RouteContext<"/api/papers/[id]/fix/[idea]/act">) {
   const { id, idea } = await ctx.params;
-  if (!loadPaper(id)?.fixes?.[idea]) return Response.json({ error: "We could not find that walkthrough." }, { status: 404 });
+  if (!(await loadPaper(id))?.fixes?.[idea]) return Response.json({ error: "We could not find that walkthrough." }, { status: 404 });
 
   let body: Record<string, unknown>;
   try {
@@ -19,6 +22,6 @@ export async function POST(request: Request, ctx: RouteContext<"/api/papers/[id]
   else if (body.type === "flagDoubt" && typeof body.index === "number") move = { type: "flagDoubt", index: body.index };
   if (!move) return Response.json({ error: "We could not read that. Try again." }, { status: 400 });
 
-  const paper = act(id, idea, move);
+  const paper = await act(id, idea, move);
   return Response.json({ fix: fixView(paper, idea) });
 }

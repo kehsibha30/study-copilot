@@ -92,7 +92,7 @@ export async function askJson<S extends z.ZodType>(opts: {
     throw error;
   }
 
-  meter(opts.paperId, opts.step, message, opts.onCost);
+  await meter(opts.paperId, opts.step, message, opts.onCost);
 
   if (message.stop_reason === "refusal") {
     throw new RefusalError(message.stop_details?.category ?? null);
@@ -134,7 +134,7 @@ export async function askText(opts: { paperId: string; job: Job; step: string; c
     if (error instanceof Anthropic.APIError) throw new StepError(`The AI service had a problem (${error.status ?? "no status"}). Ask again.`);
     throw error;
   }
-  meter(opts.paperId, opts.step, message, opts.onCost);
+  await meter(opts.paperId, opts.step, message, opts.onCost);
   if (message.stop_reason === "refusal") throw new RefusalError(message.stop_details?.category ?? null);
   const text = message.content
     .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
@@ -147,7 +147,7 @@ export async function askText(opts: { paperId: string; job: Job; step: string; c
 
 // Every paid call lands in usage.jsonl. The cost is then added to the paper, or handed to onCost for work
 // that is not tied to one paper.
-function meter(paperId: string, step: string, message: Anthropic.Beta.BetaMessage, onCost?: (usd: number) => void) {
+async function meter(paperId: string, step: string, message: Anthropic.Beta.BetaMessage, onCost?: (usd: number) => void) {
   const u = message.usage;
   const price = PRICES[message.model] ?? PRICES[FALLBACK_PRICE_MODEL];
   const usd =
@@ -156,7 +156,7 @@ function meter(paperId: string, step: string, message: Anthropic.Beta.BetaMessag
       (u.cache_creation_input_tokens ?? 0) * price.cacheWrite +
       (u.cache_read_input_tokens ?? 0) * price.cacheRead) /
     1_000_000;
-  appendUsage({
+  await appendUsage({
     at: new Date().toISOString(),
     paperId,
     step,
@@ -171,7 +171,7 @@ function meter(paperId: string, step: string, message: Anthropic.Beta.BetaMessag
     refusal: message.stop_reason === "refusal" ? message.stop_details?.category ?? "unknown" : undefined,
   });
   if (onCost) return onCost(usd);
-  updatePaper(paperId, (p) => {
+  await updatePaper(paperId, (p) => {
     p.cost.usd = Number((p.cost.usd + usd).toFixed(5));
     p.cost.calls += 1;
   });

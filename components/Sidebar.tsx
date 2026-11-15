@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { PaperRow } from "@/lib/view";
 
 export default function Sidebar() {
   const path = usePathname();
+  const router = useRouter();
   const [papers, setPapers] = useState<PaperRow[]>([]);
 
   // Refresh the list when the page changes and whenever a paper moves to a new stage.
@@ -24,6 +25,8 @@ export default function Sidebar() {
       window.removeEventListener("papers-changed", load);
     };
   }, [path]);
+
+  if (path === "/login") return null;
 
   return (
     <aside className="side">
@@ -48,7 +51,19 @@ export default function Sidebar() {
           ))}
         </nav>
       )}
-      <div className="side-foot">Your papers stay on this computer.</div>
+      <div className="side-foot">
+        <button
+          type="button"
+          className="linkish"
+          onClick={async () => {
+            await fetch("/api/logout", { method: "POST" }).catch(() => {});
+            router.replace("/login");
+            router.refresh();
+          }}
+        >
+          Sign out
+        </button>
+      </div>
     </aside>
   );
 }

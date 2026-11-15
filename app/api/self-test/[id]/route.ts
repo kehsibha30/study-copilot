@@ -1,18 +1,21 @@
 import { after } from "next/server";
 import { actSelfTest, buildSelfTest, loadSelfTest, markSelfTestIfStalled, restartSelfTest, selfTestView, type TestAct } from "@/lib/selftest";
 
+// This route can wait on the AI; the host must not cut it short.
+export const maxDuration = 300;
+
 // Looking at a set never starts (or pays for) anything.
 export async function GET(_request: Request, ctx: RouteContext<"/api/self-test/[id]">) {
   const { id } = await ctx.params;
-  const test = loadSelfTest(id);
+  const test = await loadSelfTest(id);
   if (!test) return Response.json({ error: "We could not find that set." }, { status: 404 });
-  return Response.json({ test: selfTestView(markSelfTestIfStalled(test)) });
+  return Response.json({ test: await selfTestView(await markSelfTestIfStalled(test)) });
 }
 
 // One move: choose an answer, hand the set in, flag a question, leave the set out, or try a failed build again.
 export async function POST(request: Request, ctx: RouteContext<"/api/self-test/[id]">) {
   const { id } = await ctx.params;
-  if (!loadSelfTest(id)) return Response.json({ error: "We could not find that set." }, { status: 404 });
+  if (!await loadSelfTest(id)) return Response.json({ error: "We could not find that set." }, { status: 404 });
   let body: Record<string, unknown>;
   try {
     body = await request.json();
@@ -20,9 +23,9 @@ export async function POST(request: Request, ctx: RouteContext<"/api/self-test/[
     return Response.json({ error: "We could not read that. Try again." }, { status: 400 });
   }
   if (body.type === "retry") {
-    const again = restartSelfTest(id);
+    const again = await restartSelfTest(id);
     if (again?.status === "building") after(() => buildSelfTest(id));
-    return Response.json({ test: again ? selfTestView(again) : null });
+    return Response.json({ test: again ? await selfTestView(again) : null });
   }
   let move: TestAct | null = null;
   if (body.type === "answer" && typeof body.index === "number" && typeof body.choice === "number") move = { type: "answer", index: body.index, choice: body.choice };
@@ -30,5 +33,5 @@ export async function POST(request: Request, ctx: RouteContext<"/api/self-test/[
   else if (body.type === "flag" && typeof body.index === "number") move = { type: "flag", index: body.index };
   else if (body.type === "exclude") move = { type: "exclude", excluded: body.excluded !== false };
   if (!move) return Response.json({ error: "We could not read that. Try again." }, { status: 400 });
-  return Response.json({ test: selfTestView(actSelfTest(id, move)) });
+  return Response.json({ test: await selfTestView(await actSelfTest(id, move)) });
 }

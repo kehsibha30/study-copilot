@@ -22,17 +22,31 @@ export default function Home() {
   }, []);
 
   // Choosing the files is the whole action: the upload starts straight away.
-  async function upload(files: FileList | File[] | null) {
-    if (busy || !files || files.length === 0) return;
+  // Pages go straight to storage (the host limits how much one request can carry), then the paper is created.
+  async function upload(chosen: FileList | File[] | null) {
+    if (busy || !chosen || chosen.length === 0) return;
     setBusy(true);
     setError(null);
-    const form = new FormData();
-    for (const f of Array.from(files)) form.append("files", f);
+    // Photos are read in file-name order so the pages stay in sequence.
+    const files = Array.from(chosen).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    const meta = files.map((f) => ({ name: f.name, type: f.type, size: f.size }));
     try {
-      const res = await fetch("/api/papers", { method: "POST", body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "The upload did not go through. Try again.");
-      router.push(`/papers/${data.id}`);
+      const hash = await fingerprint(files);
+      const prep = await fetch("/api/papers/prepare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ files: meta, hash }) });
+      const ready = await prep.json();
+      if (!prep.ok) throw new Error(ready.error ?? "The upload did not go through. Try again.");
+      if (!ready.existing) {
+        await Promise.all(
+          (ready.uploads as { url: string }[]).map(async (u, i) => {
+            const put = await fetch(u.url, { method: "PUT", headers: { "Content-Type": files[i].type, "x-upsert": "true" }, body: files[i] });
+            if (!put.ok) throw new Error("A page did not finish uploading. Check your connection and try again.");
+          })
+        );
+        const res = await fetch("/api/papers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: ready.id, files: meta, hash }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "The upload did not go through. Try again.");
+      }
+      router.push(`/papers/${ready.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "The upload did not go through. Try again.");
       setBusy(false);
@@ -94,4 +108,13 @@ export default function Home() {
       </div>
     </div>
   );
+}
+
+// The same files always give the same fingerprint, so a double tap does not make two papers.
+async function fingerprint(files: File[]): Promise<string> {
+  const parts = await Promise.all(files.map(async (f) => new Uint8Array(await crypto.subtle.digest("SHA-256", await f.arrayBuffer()))));
+  const all = new Uint8Array(parts.length * 32);
+  parts.forEach((p, i) => all.set(p, i * 32));
+  const sum = new Uint8Array(await crypto.subtle.digest("SHA-256", all));
+  return Array.from(sum, (b) => b.toString(16).padStart(2, "0")).join("");
 }

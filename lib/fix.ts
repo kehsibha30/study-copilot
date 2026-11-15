@@ -2,7 +2,7 @@ import { z } from "zod";
 import { askJson, askText, RefusalError, StepError } from "./claude";
 import { norm, verdict } from "./grade";
 import { pageOf } from "./pages";
-import { loadPaper, updatePaper, type Cursor, type Fix, type FixStep, type Paper, type Question, type Twist } from "./store";
+import { STALE_MS, loadPaper, updatePaper, updatePaperIf, type Cursor, type Fix, type FixStep, type Paper, type Question, type Twist } from "./store";
 
 // Stage 2: fix one idea. A short walkthrough of the student's own question (small steps, a hint,
 // a nudge on a wrong choice), then a new question to try alone, then a second go at the other
@@ -10,12 +10,10 @@ import { loadPaper, updatePaper, type Cursor, type Fix, type FixStep, type Paper
 
 // ---------- one build per idea, never two ----------
 
-const g = globalThis as { __fixJobs?: Set<string> };
-const jobs = (g.__fixJobs ??= new Set<string>());
-const jobKey = (paperId: string, idea: string) => `${paperId}:${idea}`;
-
-export function isBuilding(paperId: string, idea: string) {
-  return jobs.has(jobKey(paperId, idea));
+// The lock is on the lesson record in the database (fix.job), so a double tap or a second server
+// can never build (and pay for) the same lesson twice. A lock older than STALE_MS belongs to a dead job.
+function buildingNow(fix: Fix) {
+  return Boolean(fix.job) && Date.now() - Date.parse(fix.startedAt) < STALE_MS;
 }
 
 function q(paper: Paper, n: number): Question | undefined {
@@ -33,14 +31,14 @@ function wrongInIdea(paper: Paper, idea: string): number[] {
 }
 
 // Creates the record and marks it as building. Returns false if there is nothing to fix.
-export function startFix(paperId: string, idea: string): boolean {
-  const paper = loadPaper(paperId);
+export async function startFix(paperId: string, idea: string): Promise<boolean> {
+  const paper = await loadPaper(paperId);
   if (!paper?.analysed || !paper.ideas?.[Number(idea)]) return false;
   const existing = paper.fixes?.[idea];
   if (existing && existing.status !== "failed") return true;
   const wrong = wrongInIdea(paper, idea);
   if (wrong.length === 0) return false;
-  updatePaper(paperId, (p) => {
+  await updatePaper(paperId, (p) => {
     p.fixes ??= {};
     p.fixes[idea] = {
       status: "building",
@@ -64,16 +62,20 @@ export function startFix(paperId: string, idea: string): boolean {
 }
 
 export async function buildFix(paperId: string, idea: string): Promise<void> {
-  const key = jobKey(paperId, idea);
-  if (jobs.has(key)) return;
-  jobs.add(key);
+  const job = Math.random().toString(36).slice(2, 12);
+  const { paper, changed } = await updatePaperIf(paperId, (p) => {
+    const f = p.fixes?.[idea];
+    if (!f || f.status !== "building" || buildingNow(f)) return false;
+    f.job = job;
+    f.startedAt = new Date().toISOString();
+    return true;
+  });
+  if (!changed) return;
   try {
-    const paper = loadPaper(paperId);
-    const fix = paper?.fixes?.[idea];
-    if (!paper || !fix || fix.status !== "building") return;
+    const fix = paper.fixes![idea];
     try {
       const lesson = await makeLesson(paper, idea, fix.anchor);
-      updatePaper(paperId, (p) => {
+      await updatePaper(paperId, (p) => {
         const f = p.fixes?.[idea];
         if (!f) return;
         f.steps = lesson.steps;
@@ -86,7 +88,7 @@ export async function buildFix(paperId: string, idea: string): Promise<void> {
     } catch (error) {
       const known = error instanceof StepError;
       if (!known) console.error(`[paper ${paperId}] building the walkthrough for idea ${idea} failed`, error);
-      updatePaper(paperId, (p) => {
+      await updatePaper(paperId, (p) => {
         const f = p.fixes?.[idea];
         if (!f) return;
         f.status = "failed";
@@ -94,18 +96,23 @@ export async function buildFix(paperId: string, idea: string): Promise<void> {
       });
     }
   } finally {
-    jobs.delete(key);
+    // Release the lock (if this job still holds it), whatever happened above.
+    await updatePaper(paperId, (p) => {
+      const f = p.fixes?.[idea];
+      if (f?.job === job) delete f.job;
+    }).catch((error) => console.error(`[paper ${paperId}] could not release the lesson lock for idea ${idea}`, error));
   }
 }
 
 // A build with no job behind it (the app was restarted) becomes "failed" so the screen offers Try again.
-export function markFixIfStalled(paper: Paper, idea: string): Paper {
+export async function markFixIfStalled(paper: Paper, idea: string): Promise<Paper> {
   const fix = paper.fixes?.[idea];
-  if (!fix || fix.status !== "building" || isBuilding(paper.id, idea)) return paper;
-  if (Date.now() - Date.parse(fix.startedAt) < 20_000) return paper;
-  return updatePaper(paper.id, (p) => {
+  if (!fix || fix.status !== "building" || buildingNow(fix)) return paper;
+  // Not yet claimed: give the background request time to start.
+  if (!fix.job && Date.now() - Date.parse(fix.startedAt) < 45_000) return paper;
+  return await updatePaper(paper.id, (p) => {
     const f = p.fixes?.[idea];
-    if (f) {
+    if (f && f.status === "building" && !buildingNow(f)) {
       f.status = "failed";
       f.error = "This stopped partway. Nothing is lost.";
     }
@@ -309,8 +316,8 @@ export type Act =
   | { type: "flag" }
   | { type: "flagDoubt"; index: number };
 
-export function act(paperId: string, idea: string, a: Act): Paper {
-  return updatePaper(paperId, (p) => {
+export async function act(paperId: string, idea: string, a: Act): Promise<Paper> {
+  return await updatePaper(paperId, (p) => {
     const fix = p.fixes?.[idea];
     if (!fix || fix.status !== "ready") return;
     const c = fix.cursor;
@@ -501,7 +508,7 @@ export function fixView(paper: Paper, idea: string): FixView | null {
 export async function askDoubt(paperId: string, idea: string, raw: string): Promise<Paper> {
   const question = raw.trim().slice(0, 400);
   if (!question) throw new StepError("Type your doubt first.");
-  const paper = loadPaper(paperId);
+  const paper = await loadPaper(paperId);
   const stored = paper?.ideas?.[Number(idea)];
   const fix = paper?.fixes?.[idea];
   if (!paper || !stored || !fix || fix.status !== "ready") throw new StepError("This walkthrough is not ready yet.");
@@ -566,7 +573,7 @@ Answer in at most four short plain sentences, for a 13-year-old. Answer the doub
   });
 
   const where = c.kind === "step" ? `step-${c.index}` : c.kind;
-  return updatePaper(paperId, (p) => {
+  return await updatePaper(paperId, (p) => {
     p.fixes?.[idea]?.doubts.push({ q: question, a: answer, at: new Date().toISOString(), where });
   });
 }

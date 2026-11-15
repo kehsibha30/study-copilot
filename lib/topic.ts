@@ -25,8 +25,8 @@ export type TopicView = {
   doubts: { q: string; a: string; at: string; flagged: boolean }[];
 };
 
-function find(subject: string, topic: string) {
-  const report = workOn();
+async function find(subject: string, topic: string) {
+  const report = await workOn();
   const row = report.subjects.find((s) => s.name === subject)?.topics.find((t) => t.name === topic);
   return row ? { report, row } : null;
 }
@@ -40,13 +40,13 @@ function line(c: ConceptRow): string {
   return head;
 }
 
-function waitingSet(): { href: string } | null {
-  const set = listSelfTests().find((t) => t.status === "ready" && !t.submittedAt && !t.excluded);
+async function waitingSet(): Promise<{ href: string } | null> {
+  const set = (await listSelfTests()).find((t) => t.status === "ready" && !t.submittedAt && !t.excluded);
   return set ? { href: `/self-test/${set.id}` } : null;
 }
 
-export function topicView(subject: string, topic: string): TopicView | null {
-  const found = find(subject, topic);
+export async function topicView(subject: string, topic: string): Promise<TopicView | null> {
+  const found = await find(subject, topic);
   if (!found) return null;
   const { row } = found;
   const ideas = [...row.concepts, ...row.tracked];
@@ -62,28 +62,28 @@ export function topicView(subject: string, topic: string): TopicView | null {
     remembers,
     ideas: ideas.map((c) => ({ name: c.name, href: c.href, open: c.status === "needs_work" || c.status === "slipped" })),
     canTest: row.canTest,
-    waiting: waitingSet(),
-    doubts: listTopicDoubts().filter((d) => d.subject === subject && d.topic === topic).map((d) => ({ q: d.q, a: d.a, at: d.at, flagged: Boolean(d.flagged) })),
+    waiting: await waitingSet(),
+    doubts: (await listTopicDoubts()).filter((d) => d.subject === subject && d.topic === topic).map((d) => ({ q: d.q, a: d.a, at: d.at, flagged: Boolean(d.flagged) })),
   };
 }
 
 export async function askTopic(subject: string, topic: string, raw: string): Promise<TopicView> {
   const question = raw.trim().slice(0, 400);
   if (!question) throw new StepError("Type your question first.");
-  const found = find(subject, topic);
+  const found = await find(subject, topic);
   if (!found) throw new StepError("We could not find that topic.");
-  if (waitingSet()) throw new StepError("You have questions waiting. Finish them first, then ask here.");
+  if (await waitingSet()) throw new StepError("You have questions waiting. Finish them first, then ask here.");
 
-  const all = listTopicDoubts();
+  const all = await listTopicDoubts();
   const mine = all.filter((d) => d.subject === subject && d.topic === topic);
   // A double tap on Ask must not pay for, or show, the same question twice.
   const last = mine[mine.length - 1];
-  if (last && last.q === question && Date.now() - Date.parse(last.at) < 60_000) return topicView(subject, topic)!;
+  if (last && last.q === question && Date.now() - Date.parse(last.at) < 60_000) return (await topicView(subject, topic))!;
   if (all.filter((d) => Date.now() - Date.parse(d.at) < 24 * 3600_000).length >= PER_DAY) {
     throw new StepError("That is a lot of questions for one day. Carry on tomorrow, or ask your teacher.");
   }
 
-  const papers = listPapers().filter((p) => !p.excluded && stage(p) === "done");
+  const papers = (await listPapers()).filter((p) => !p.excluded && stage(p) === "done");
 
   // The new question at the end of a lesson is done without help. If the typed question is that question, stop here.
   const held: string[] = [];
@@ -97,7 +97,7 @@ export async function askTopic(subject: string, topic: string, raw: string): Pro
   }
 
   const { row } = found;
-  const ideas = sources().filter((s) => s.subject === subject && s.topic === topic);
+  const ideas = (await sources()).filter((s) => s.subject === subject && s.topic === topic);
   const status = new Map([...row.concepts, ...row.tracked].map((c) => [c.name, c.status]));
   const wrong: string[] = [];
   for (const p of papers) {
@@ -136,6 +136,6 @@ Answer in one paragraph of at most five short plain sentences in total, for a 13
     ],
   });
 
-  addTopicDoubt({ subject, topic, q: question, a: answer, at: new Date().toISOString() });
-  return topicView(subject, topic)!;
+  await addTopicDoubt({ subject, topic, q: question, a: answer, at: new Date().toISOString() });
+  return (await topicView(subject, topic))!;
 }

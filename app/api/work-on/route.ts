@@ -5,5 +5,5 @@ import { workOn } from "@/lib/workon";
 // freeze the answer at build time (the papers are read with synchronous file calls, which do not stop that).
 export async function GET() {
   await connection();
-  return Response.json({ report: workOn() });
+  return Response.json({ report: await workOn() });
 }

@@ -1,7 +1,6 @@
-import fs from "node:fs";
 import { PDFDocument } from "pdf-lib";
 import type Anthropic from "@anthropic-ai/sdk";
-import { filePath, type Paper, type Question } from "./store";
+import { readUpload, type Paper, type Question } from "./store";
 
 type Content = Anthropic.Beta.BetaContentBlockParam[];
 
@@ -12,7 +11,7 @@ export async function pageOf(paper: Paper, q: Question): Promise<Content> {
   const first = paper.files[0];
   if (!first) return [];
   if (first.mime === "application/pdf") {
-    const bytes = fs.readFileSync(filePath(paper.id, first.stored));
+    const bytes = await readUpload(paper.id, first.stored);
     let data = bytes.toString("base64");
     try {
       const src = await PDFDocument.load(bytes);
@@ -29,6 +28,6 @@ export async function pageOf(paper: Paper, q: Question): Promise<Content> {
     return [{ type: "document", source: { type: "base64", media_type: "application/pdf", data } }];
   }
   const file = paper.files[Math.min(Math.max(q.page - 1, 0), paper.files.length - 1)];
-  const data = fs.readFileSync(filePath(paper.id, file.stored)).toString("base64");
+  const data = (await readUpload(paper.id, file.stored)).toString("base64");
   return [{ type: "image", source: { type: "base64", media_type: file.mime as "image/jpeg" | "image/png" | "image/webp", data } }];
 }
