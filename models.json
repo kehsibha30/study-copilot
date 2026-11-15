@@ -1,0 +1,8 @@
+{
+  "read": "claude-haiku-5-5",
+  "solve": "claude-haiku-5-5",
+  "analyse": "claude-sonnet-5-5",
+  "lesson": "claude-sonnet-5-5",
+  "verify": "claude-sonnet-5-5",
+  "doubt": "claude-sonnet-5-5"
+}
