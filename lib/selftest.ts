@@ -1,10 +1,12 @@
 import { z } from "zod";
 import { askJson, RefusalError, StepError } from "./claude";
 import { stage, verdict } from "./grade";
-import { STALE_MS, appendUsage, listPapers, newId } from "./store";
-import { listDocs, loadDoc, saveDoc, updateDoc } from "./db";
+import { STALE_MS, appendUsage, listPapers } from "./store";
+import { CLASS_LEVEL } from "./syllabus";
+import { createHash } from "node:crypto";
+import { insertDoc, listDocs, loadDoc, updateDoc } from "./db";
 
-// "Test yourself": a short set of new questions on the ideas the student got wrong on their papers.
+// Practice (was "Test yourself"): a short set of new questions on the ideas the student got wrong on their papers.
 // Every question is written by the AI and then solved blind by a second pass; a question the second
 // pass disagrees with is dropped before the student sees it.
 
@@ -19,6 +21,8 @@ export type TestQuestion = {
   explain: string;
   // Set on a question from a topic the student is already good at. It checks the topic has not slipped.
   keep?: TopicPick;
+  // Set on "mixed" and "chapter" questions: the chapter it is on. Its result counts towards that chapter's practice score.
+  topic?: TopicPick;
 };
 
 export type TopicPick = { subject: string; topic: string };
@@ -40,6 +44,10 @@ export type SelfTest = {
   submittedAt?: string;
   flagged: number[];
   excluded?: boolean;
+  // mistakes (the default): new questions on ideas he got wrong. mixed: all the chapters of his latest paper, at
+  // its level. chapter: one chapter from the syllabus, which may have no paper behind it yet.
+  mode?: "mistakes" | "mixed" | "chapter";
+  basis?: string; // mixed: the paper the set copies; chapter: "Subject: chapter"
   cost: { usd: number; calls: number };
 };
 
@@ -52,10 +60,6 @@ function validId(id: string) {
 export async function loadSelfTest(id: string): Promise<SelfTest | null> {
   if (!validId(id)) return null;
   return loadDoc<SelfTest>("self_tests", id);
-}
-
-async function save(test: SelfTest) {
-  await saveDoc("self_tests", test);
 }
 
 async function update(id: string, change: (t: SelfTest) => void): Promise<SelfTest> {
@@ -142,10 +146,48 @@ export async function startRecheck(names: string[]): Promise<SelfTest | null> {
   return await create({ topics, recheck: ideas.map((s) => s.name) });
 }
 
-async function create(parts: Pick<SelfTest, "topics" | "recheck" | "keep">): Promise<SelfTest> {
+// A twin made in the last minute and not handed in is returned, so a double tap never pays twice.
+async function twinOf(mode: SelfTest["mode"], basis: string): Promise<SelfTest | null> {
+  return (await listSelfTests()).find((t) => t.mode === mode && t.basis === basis && !t.submittedAt && Date.now() - Date.parse(t.createdAt) < 60_000) ?? null;
+}
+
+// "Mixed, like my last paper": every chapter that had a counted question on his latest paper.
+export async function lastPaperForMix(): Promise<{ title: string; topics: TopicPick[] } | null> {
+  const paper = (await listPapers()).find((p) => !p.excluded && stage(p) === "done");
+  if (!paper) return null;
+  const topics: TopicPick[] = [];
+  for (const q of paper.questions ?? []) {
+    const subject = q.subject || q.section || "Other";
+    const topic = q.topic || "";
+    const v = verdict(paper, q);
+    if (!topic || q.type !== "mcq" || (v !== "correct" && v !== "wrong")) continue;
+    if (!topics.some((t) => t.subject === subject && t.topic === topic)) topics.push({ subject, topic });
+  }
+  return topics.length ? { title: paper.title, topics: topics.slice(0, 8) } : null;
+}
+
+export async function startMixed(): Promise<SelfTest | null> {
+  const last = await lastPaperForMix();
+  if (!last) return null;
+  return (await twinOf("mixed", last.title)) ?? (await create({ topics: last.topics, mode: "mixed", basis: last.title }));
+}
+
+export async function startChapter(subject: string, topic: string): Promise<SelfTest | null> {
+  const clean = { subject: subject.trim().slice(0, 60), topic: topic.trim().slice(0, 120) };
+  if (!clean.subject || !clean.topic) return null;
+  const basis = `${clean.subject}: ${clean.topic}`;
+  return (await twinOf("chapter", basis)) ?? (await create({ topics: [clean], mode: "chapter", basis }));
+}
+
+// Creates a set. Two taps on the same thing within the same minute give the same id, and the database refuses
+// a second row with that id, so a double tap can never create (and pay for) two sets. Found 16 Nov 2026:
+// a "is there a twin already?" check let two requests through at once, and both sets were written and paid for.
+async function create(parts: Pick<SelfTest, "topics" | "recheck" | "keep" | "mode" | "basis">): Promise<SelfTest> {
   const now = new Date().toISOString();
+  const what = JSON.stringify([parts.mode ?? "mistakes", parts.recheck ?? null, parts.basis ?? null, parts.topics]);
+  const id = createHash("sha256").update(`${what}|${Math.floor(Date.now() / 60_000)}`).digest("hex").slice(0, 12);
   const test: SelfTest = {
-    id: newId(),
+    id,
     createdAt: now,
     startedAt: now,
     status: "building",
@@ -155,8 +197,8 @@ async function create(parts: Pick<SelfTest, "topics" | "recheck" | "keep">): Pro
     flagged: [],
     cost: { usd: 0, calls: 0 },
   };
-  await save(test);
-  return test;
+  if (await insertDoc("self_tests", test)) return test;
+  return (await loadSelfTest(id)) ?? test;
 }
 
 export async function restartSelfTest(id: string): Promise<SelfTest | null> {
@@ -234,7 +276,7 @@ export async function buildSelfTest(id: string): Promise<void> {
   if (!changed) return;
   try {
     try {
-      const questions = await writeQuestions(test);
+      const questions = test.mode === "mixed" || test.mode === "chapter" ? await writeTopicQuestions(test) : await writeQuestions(test);
       await update(id, (t) => {
         t.questions = questions;
         t.answers = {};
@@ -389,6 +431,130 @@ Give only the numbers.`,
   const extra = await keepQuestions(test, [...chosen.map((c) => c.text), ...seen], onCost);
   await appendUsage({ at: new Date().toISOString(), paperId: `selftest:${test.id}`, step: "selftest-built", written: kept.length, used: chosen.length, kept: extra.length, usd: 0 });
   return [...chosen, ...extra].sort((a, b) => a.level - b.level);
+}
+
+// "Mixed" and "chapter" sets: new questions on whole chapters, not on ideas he got wrong. Each is checked by a
+// second, blind solve like every other set; a question it disagrees with is dropped before he sees it.
+async function writeTopicQuestions(test: SelfTest): Promise<TestQuestion[]> {
+  const topics = test.topics.slice(0, 8);
+  if (topics.length === 0) throw new StepError("There is nothing to practise here.");
+  const key = (t: TopicPick) => `${t.subject}|${t.topic}`.toLowerCase();
+  const wanted = new Set(topics.map(key));
+  const papers = (await listPapers()).filter((p) => !p.excluded && stage(p) === "done");
+  // Questions from his own papers on these chapters: for level and style only, and to catch near copies.
+  const samples = new Map<string, string[]>();
+  for (const p of papers) {
+    for (const q of p.questions ?? []) {
+      const k = key({ subject: q.subject || q.section || "Other", topic: q.topic || "" });
+      if (!wanted.has(k) || q.hasFigure || q.type !== "mcq") continue;
+      const list = samples.get(k) ?? [];
+      if (list.length < 2) list.push(`${q.text}\n${q.options.map((o) => `(${o.label}) ${o.text}`).join("\n")}`);
+      samples.set(k, list);
+    }
+  }
+  const sampleTexts = [...samples.values()].flat();
+  const seen = (await listSelfTests())
+    .filter((t) => t.id !== test.id)
+    .flatMap((t) => t.questions.filter((q) => q.topic && wanted.has(key(q.topic))).map((q) => q.text))
+    .slice(0, 40);
+  const names = new Map(topics.map((t) => [t.topic.trim().toLowerCase(), t]));
+  const onCost = async (usd: number) =>
+    await update(test.id, (t) => {
+      t.cost.usd = Number((t.cost.usd + usd).toFixed(5));
+      t.cost.calls += 1;
+    });
+  const level = test.mode === "mixed" && test.basis ? `the level of the student's paper "${test.basis}"` : CLASS_LEVEL;
+  const chapterList = topics
+    .map((t, i) => {
+      const own = samples.get(key(t)) ?? [];
+      return `Chapter ${i + 1}: ${t.topic} (${t.subject})${own.length ? `\nQuestions from the student's own papers on this chapter (for level and style only; do not reuse them or their numbers):\n${own.map((x) => `- ${x}`).join("\n")}` : ""}`;
+    })
+    .join("\n\n");
+
+  const kept: TestQuestion[] = [];
+  for (let round = 1; round <= 2 && kept.length < WANT; round++) {
+    const need = round === 1 ? 12 : WANT - kept.length + 2;
+    const done = [...kept.map((k) => k.text), ...seen];
+    const out = await askJson({
+      paperId: `selftest:${test.id}`,
+      job: "lesson",
+      step: `selftest-${test.mode}-write-${round}`,
+      schema: WriteSchema,
+      effort: "medium",
+      system: SYSTEM,
+      onCost,
+      content: [
+        {
+          type: "text",
+          text: `Write practice questions for a student in ${CLASS_LEVEL}, at ${level}.
+
+${chapterList}
+
+Write ${need} new multiple-choice questions${topics.length > 1 ? ", spread as evenly as you can across the chapters" : " on this chapter"}. Cover the main ideas a school test on ${topics.length > 1 ? "these chapters" : "this chapter"} would ask about, using only what the NCERT book for this class teaches.
+
+For each question:
+- concept: the chapter it is on, spelled exactly as the chapter name above (without the subject).
+- level: 1, 2 or 3. Level 1 is a direct use of one idea. Level 2 is like a school test question. Level 3 is harder: two steps, or an idea in a new setting, still inside this class's syllabus. Write about the same number at each level.
+- text: the question. It must be answerable from its own words, with no figure.
+- options: four options, exactly one right. Wrong options must be ones a student could really fall for. Do not use "all of these", "none of these", or options that refer to other options.
+- explain: one or two sentences showing why the right option is right.
+
+Check every fact and every piece of arithmetic. Maths in plain text (x^2, 3/4, 10^5).${done.length ? `\n\nThese are already written or already seen by the student. Do not repeat them:\n${done.map((k) => `- ${k}`).join("\n")}` : ""}`,
+        },
+      ],
+    });
+
+    const drafted: TestQuestion[] = [];
+    for (const q of out.questions) {
+      const topic = names.get(q.concept.trim().toLowerCase());
+      const options = q.options.map((o) => ({ text: o.text.trim(), right: o.right })).filter((o) => o.text);
+      if (!topic || !q.text.trim() || options.length !== 4 || options.filter((o) => o.right).length !== 1) continue;
+      const copies = (other: string) => overlap(q.text, other) >= 0.7;
+      if (sampleTexts.some(copies) || done.some(copies) || drafted.some((d) => copies(d.text))) continue;
+      drafted.push({ concept: topic.topic, level: q.level <= 1 ? 1 : q.level >= 3 ? 3 : 2, text: q.text.trim(), options: shuffle(options), explain: q.explain.trim(), topic });
+    }
+    if (drafted.length === 0) continue;
+    try {
+      const check = await askJson({
+        paperId: `selftest:${test.id}`,
+        job: "verify",
+        step: `selftest-${test.mode}-check-${round}`,
+        schema: CheckSchema,
+        effort: "medium",
+        system: SYSTEM,
+        onCost,
+        content: [
+          {
+            type: "text",
+            text: `Solve each question. Give the number of the option that is correct, or 0 if the question has no single correct option, is unclear, or uses a fact that is wrong.
+
+${drafted.map((d, i) => `Question ${i + 1}: ${d.text}\n${d.options.map((o, j) => `  ${j + 1}. ${o.text}`).join("\n")}`).join("\n\n")}
+
+Give only the numbers.`,
+          },
+        ],
+      });
+      drafted.forEach((d, i) => {
+        const pick = check.answers.find((a) => a.q === i + 1)?.choice;
+        if (pick !== undefined && d.options[pick - 1]?.right === true) kept.push(d);
+      });
+    } catch (error) {
+      if (!(error instanceof RefusalError)) throw error;
+      console.error(`[self-test ${test.id}] check declined (${error.category ?? "no category"})`);
+    }
+  }
+  if (kept.length === 0) throw new StepError("We could not write questions that passed our own check. Try again.");
+
+  const chosen: TestQuestion[] = [];
+  const spare: TestQuestion[] = [];
+  for (const lv of [1, 2, 3] as const) {
+    const at = kept.filter((k) => k.level === lv);
+    chosen.push(...at.slice(0, BY_LEVEL[lv]));
+    spare.push(...at.slice(BY_LEVEL[lv]));
+  }
+  chosen.push(...spare.slice(0, Math.max(0, WANT - chosen.length)));
+  await appendUsage({ at: new Date().toISOString(), paperId: `selftest:${test.id}`, step: `selftest-${test.mode}-built`, written: kept.length, used: chosen.length, usd: 0 });
+  return chosen.sort((a, b) => a.level - b.level);
 }
 
 // One question from each topic the student is already good at (up to two), so the set also shows whether
@@ -556,12 +722,12 @@ export async function selfTestView(t: SelfTest): Promise<SelfTestView> {
       concept: done ? q.concept : null,
       explain: done ? q.explain : null,
       flagged: t.flagged.includes(i),
-      lesson: done && !q.keep ? lessons.get(q.concept.trim().toLowerCase()) ?? null : null,
+      lesson: done && !q.keep && !q.topic ? lessons.get(q.concept.trim().toLowerCase()) ?? null : null,
     };
   });
   let result: SelfTestView["result"] = null;
   if (done) {
-    const missed = t.questions.find((q, i) => !q.keep && !t.flagged.includes(i) && !q.options[t.answers[String(i)]]?.right);
+    const missed = t.questions.find((q, i) => !q.keep && !q.topic && !t.flagged.includes(i) && !q.options[t.answers[String(i)]]?.right);
     const href = missed ? lessons.get(missed.concept.trim().toLowerCase()) : undefined;
     result = { ...marks(t), next: missed && href ? { name: missed.concept, href } : null };
   }

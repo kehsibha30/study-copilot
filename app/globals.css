@@ -225,3 +225,44 @@ details.topic .inner { padding: 0 0 16px; font-size: 15px; color: var(--muted); 
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 /* The sign-in page has no sidebar, so it takes the whole width. */
 .shell:has(.signin) { grid-template-columns: minmax(0, 1fr); }
+
+/* Practice */
+.suggest { border: 2px solid var(--accent); }
+.btn.wide { width: 100%; text-align: center; min-height: 48px; }
+.ideas { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ideas li { padding: 10px 0; border-top: 1px solid var(--line); }
+.ideas li:first-child { border-top: 0; padding-top: 0; }
+.choices { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.choices > button, .choices > .choice-link, .choices > .choice-note {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 56px; padding: 8px 2px;
+  background: none; border: 0; border-bottom: 1px solid var(--line); font: inherit; color: var(--ink); text-align: left; cursor: pointer;
+}
+.choices > .choice-note { cursor: default; }
+.choices > button:hover, .choices > .choice-link:hover { background: #fbf8f4; text-decoration: none; }
+.choices > button:disabled { cursor: progress; }
+.choices .t { display: block; font-weight: 500; }
+.choices .tiny { display: block; }
+.choices svg { color: var(--muted); flex-shrink: 0; }
+.picker { padding: 14px 0 18px; border-bottom: 1px solid var(--line); }
+.chip { min-height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid #d8cec3; background: var(--card); color: var(--ink); font: inherit; cursor: pointer; }
+.chip:hover { border-color: var(--accent); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+.chapter { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); margin-top: 8px; cursor: pointer; }
+.chapter:hover { border-color: #cfc4b8; }
+.chapter.on { border: 2px solid var(--accent); padding: 9px 11px; }
+.chapter input { accent-color: var(--accent); width: 18px; height: 18px; flex-shrink: 0; }
+
+/* Report */
+.seg { display: inline-flex; align-self: flex-start; background: #efe9e2; border-radius: 10px; padding: 3px; }
+.seg button { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: #5e5650; font: inherit; cursor: pointer; }
+.seg button:hover { color: var(--ink); }
+.seg button.on { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+.story { margin: 0; font-family: var(--font-serif), Georgia, serif; font-size: 20px; line-height: 1.45; }
+.dotline { display: flex; gap: 10px; align-items: flex-start; }
+.dotline .dot { margin-top: 8px; width: 8px; height: 8px; border-radius: 99px; background: var(--accent); flex-shrink: 0; }
+.card.weak { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; }
+.plan { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.plan li { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+.plan li:last-child { border-bottom: 1px solid var(--line); }
+/* The chapter list can be long; the Start button stays in reach while picking. */
+.picker > .btn.wide { position: sticky; bottom: 12px; box-shadow: 0 4px 14px rgba(43, 38, 35, 0.18); }

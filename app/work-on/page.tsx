@@ -111,7 +111,7 @@ export default function WorkOnPage() {
       )}
 
       {report.open > 0 && (
-        <div><Link href="/self-test" className="btn ghost">Test yourself on new questions</Link></div>
+        <div><Link href="/self-test" className="btn ghost">Practise on new questions</Link></div>
       )}
 
       {report.checking.length + report.held.length > 0 && (

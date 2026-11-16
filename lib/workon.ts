@@ -77,6 +77,9 @@ export type WorkOn = {
   answersReported: number; // answers to his own questions (in lessons and on topic pages) that he said looked wrong
   answersGiven: number;
   firstAt: string | null;
+  // Chapter practice (mixed and chapter sets), handed in and not flagged. Newest first.
+  practice: { subject: string; topic: string; right: number; total: number; last: string }[];
+  setsDone: number; // practice sets and checks handed in
 };
 
 const NOT_SORTED = "Not sorted yet";
@@ -181,14 +184,27 @@ export async function workOn(now = Date.now()): Promise<WorkOn> {
   // New questions answered without help, on sets and rechecks.
   const sets = (await listSelfTests()).filter((t) => !t.excluded);
   const keepLast = new Map<string, { at: string; right: boolean }>();
+  // Mixed and chapter sets: right and wrong per chapter, so practice shows in the report even with no paper behind it.
+  const practice = new Map<string, WorkOn["practice"][number]>();
+  let setsDone = 0;
   for (const t of sets) {
     activity.push(t.createdAt);
     if (!t.submittedAt) continue;
+    setsDone++;
     activity.push(t.submittedAt);
     const tally = new Map<string, { right: number; total: number }>();
     t.questions.forEach((q, i) => {
       if (t.flagged.includes(i)) return;
       const right = Boolean(q.options[t.answers[String(i)]]?.right);
+      if (q.topic) {
+        const k = `${q.topic.subject}|${q.topic.topic}`;
+        const p = practice.get(k) ?? { subject: q.topic.subject, topic: q.topic.topic, right: 0, total: 0, last: t.submittedAt! };
+        p.total++;
+        if (right) p.right++;
+        if (t.submittedAt! > p.last) p.last = t.submittedAt!;
+        practice.set(k, p);
+        return;
+      }
       if (q.keep) {
         const k = `${q.keep.subject}|${q.keep.topic}`;
         const last = keepLast.get(k);
@@ -339,5 +355,7 @@ export async function workOn(now = Date.now()): Promise<WorkOn> {
     answersReported,
     answersGiven,
     firstAt: papers[0]?.createdAt ?? null,
+    setsDone,
+    practice: [...practice.values()].sort((a, b) => b.last.localeCompare(a.last)),
   };
 }

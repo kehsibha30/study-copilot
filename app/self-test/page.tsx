@@ -3,119 +3,210 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { when } from "@/lib/format";
+import { day, when } from "@/lib/format";
 
-type Topic = { subject: string; topic: string; ideas: string[]; open: boolean };
-type SetRow = { id: string; createdAt: string; status: string; submitted: boolean; recheck: boolean; excluded: boolean; topics: string[]; total: number; right: number; counted: number };
+type Chapter = { topic: string; status: "to_fix" | "getting_there" | "strong" | "tried" | "not_tried"; line: string };
+type Data = {
+  suggestion: { ideas: { name: string; subject: string; topic: string; paper: string }[]; topics: { subject: string; topic: string }[] } | null;
+  mix: { title: string; chapters: number } | null;
+  check: { due: number; waiting: string | null; next: string | null };
+  subjects: { name: string; chapters: Chapter[] }[];
+  sets: { id: string; createdAt: string; status: string; submitted: boolean; recheck: boolean; mode: string; basis: string | null; excluded: boolean; topics: string[]; total: number; right: number; counted: number }[];
+};
 
-const key = (t: { subject: string; topic: string }) => `${t.subject}|${t.topic}`;
+const PILL: Record<Chapter["status"], { cls: string; label: string }> = {
+  to_fix: { cls: "pill bad", label: "To fix" },
+  getting_there: { cls: "pill warn", label: "Getting there" },
+  strong: { cls: "pill", label: "Strong" },
+  tried: { cls: "pill plain", label: "Tried" },
+  not_tried: { cls: "pill plain", label: "Not tried" },
+};
 
-export default function SelfTestHome() {
+function Chevron() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+export default function Practice() {
   const router = useRouter();
-  const [topics, setTopics] = useState<Topic[] | null>(null);
-  const [sets, setSets] = useState<SetRow[]>([]);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState(false);
+  const [data, setData] = useState<Data | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [subject, setSubject] = useState<string | null>(null);
+  const [chapter, setChapter] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/self-test", { cache: "no-store" })
       .then((r) => r.json())
-      .then((d: { topics: Topic[]; sets: SetRow[] }) => {
-        setTopics(d.topics ?? []);
-        setSets(d.sets ?? []);
-        // The likely choice is already ticked: the topics that still need work (up to three).
-        const likely = (d.topics ?? []).filter((t) => t.open).slice(0, 3);
-        // Coming from the report with one topic chosen: that topic is ticked instead.
+      .then((d: Data) => {
+        setData(d);
+        // Coming from the report with one chapter chosen (?topic=Subject|Chapter): open the picker on it.
         const asked = new URLSearchParams(window.location.search).get("topic");
-        const wanted = asked ? (d.topics ?? []).filter((t) => key(t) === asked) : [];
-        setPicked(new Set((wanted.length ? wanted : likely.length ? likely : (d.topics ?? []).slice(0, 1)).map(key)));
+        const [s, t] = asked ? asked.split("|") : [];
+        const first = d.subjects[0]?.name ?? null;
+        setSubject(s && d.subjects.some((x) => x.name === s) ? s : first);
+        if (s && t) {
+          setChapter(t);
+          setPicking(true);
+        }
+        // Nothing to suggest and no paper yet: the chapter picker is the way in, so it starts open.
+        if (!d.suggestion && !d.mix) setPicking(true);
       })
       .catch(() => setError("We could not load this. Refresh the page to try again."));
   }, []);
 
-  async function start() {
+  async function start(kind: string, body: Record<string, unknown>) {
     if (busy) return;
-    if (picked.size === 0) return setError("Pick at least one topic.");
-    setBusy(true);
+    setBusy(kind);
     setError(null);
     try {
-      const res = await fetch("/api/self-test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topics: (topics ?? []).filter((t) => picked.has(key(t))).map((t) => ({ subject: t.subject, topic: t.topic })) }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      router.push(`/self-test/${data.id}`);
+      const res = await fetch("/api/self-test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error);
+      router.push(`/self-test/${out.id}`);
     } catch (e) {
       setError(e instanceof Error && e.message ? e.message : "That did not go through. Try again.");
-      setBusy(false);
+      setBusy(null);
     }
   }
 
-  if (!topics) return error ? <div className="error" role="alert">{error}</div> : <p className="muted">Looking through your papers…</p>;
+  if (!data) return error ? <div className="error" role="alert">{error}</div> : <p className="muted">Getting your practice ready…</p>;
 
-  if (topics.length === 0) {
-    return (
-      <div className="stack" style={{ gap: 18 }}>
-        <div>
-          <h1>Test yourself</h1>
-          <p className="lede">Nothing to test yet. Upload a paper and mark your answers; new questions are made from what you get wrong.</p>
-        </div>
-        <div><Link href="/" className="btn">Upload a paper</Link></div>
-      </div>
-    );
-  }
-
-  // A set that was started and not handed in comes first, so it is not lost behind a new one.
-  const waiting = sets.find((s) => s.status === "ready" && !s.submitted && !s.recheck);
+  const waiting = data.sets.find((s) => s.status === "ready" && !s.submitted && !s.recheck);
+  const chapters = data.subjects.find((s) => s.name === subject)?.chapters ?? [];
+  const n = data.suggestion?.ideas.length ?? 0;
 
   return (
-    <div className="stack" style={{ gap: 22 }}>
-      <div>
-        <h1>Test yourself</h1>
-        <p className="lede">10 new questions on what you got wrong, from easy to harder. No hints, so you can see what has stuck.</p>
-        {waiting && (
-          <div className="row" style={{ marginTop: 16 }}>
-            <Link href={`/self-test/${waiting.id}`} className="btn">Carry on: {waiting.total} questions waiting</Link>
-            <span className="muted tiny">{waiting.topics.join(", ")}</span>
-          </div>
-        )}
-      </div>
+    <div className="stack" style={{ gap: 24 }}>
+      <h1>Practice</h1>
 
-      <div className="card" style={{ padding: "6px 22px" }}>
-        {topics.map((t) => (
-          <label className="trow" key={key(t)} style={{ cursor: "pointer", justifyContent: "flex-start", alignItems: "flex-start" }}>
-            <input
-              type="checkbox"
-              checked={picked.has(key(t))}
-              style={{ marginTop: 5, width: 18, height: 18, accentColor: "var(--accent)" }}
-              onChange={(e) => {
-                const next = new Set(picked);
-                if (e.target.checked) next.add(key(t));
-                else next.delete(key(t));
-                setPicked(next);
-              }}
-            />
-            <span>
-              {t.subject} · {t.topic}
-              <span className="sub" style={{ display: "block" }}>{t.ideas.join(" · ")}</span>
-            </span>
-          </label>
-        ))}
-      </div>
+      {/* One suggested next step. */}
+      {waiting ? (
+        <section className="card stack suggest">
+          <span className="tiny" style={{ fontWeight: 600, color: "var(--good-ink)" }}>You started this</span>
+          <h2 style={{ fontSize: 22 }}>{waiting.total} questions waiting</h2>
+          <p className="muted tiny" style={{ margin: 0 }}>{waiting.basis ?? waiting.topics.join(", ")}</p>
+          <Link href={`/self-test/${waiting.id}`} className="btn wide">Carry on</Link>
+        </section>
+      ) : data.suggestion ? (
+        <section className="card stack suggest">
+          <span className="tiny" style={{ fontWeight: 600, color: "var(--good-ink)" }}>Suggested for today</span>
+          <h2 style={{ fontSize: 22 }}>10 new questions on your {n === 1 ? "weak idea" : `${n} weak ideas`}</h2>
+          <ul className="ideas">
+            {data.suggestion.ideas.map((i) => (
+              <li key={i.name}>
+                {i.name}
+                <span className="muted tiny" style={{ display: "block" }}>{i.subject} · {i.topic} · wrong on {i.paper}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="muted tiny" style={{ margin: 0 }}>About 10 minutes. Easy first, then harder. No hints.</p>
+          <button className="btn wide" onClick={() => start("suggest", { mode: "mistakes", topics: data.suggestion!.topics })} aria-busy={busy === "suggest"} disabled={Boolean(busy)}>
+            {busy === "suggest" ? "Starting…" : "Start"}
+          </button>
+        </section>
+      ) : data.mix ? (
+        <section className="card stack suggest">
+          <span className="tiny" style={{ fontWeight: 600, color: "var(--good-ink)" }}>Suggested for today</span>
+          <h2 style={{ fontSize: 22 }}>10 mixed questions, like {data.mix.title}</h2>
+          <p className="muted tiny" style={{ margin: 0 }}>Nothing is waiting to be fixed, so this keeps every chapter of your last paper fresh.</p>
+          <button className="btn wide" onClick={() => start("mix", { mode: "mixed" })} aria-busy={busy === "mix"} disabled={Boolean(busy)}>
+            {busy === "mix" ? "Starting…" : "Start"}
+          </button>
+        </section>
+      ) : (
+        <p className="lede" style={{ marginTop: -8 }}>Pick a chapter to practise. Once you upload a test paper, practice is built from your own mistakes.</p>
+      )}
 
       {error && <div className="error" role="alert">{error}</div>}
-      <div><button className={waiting ? "btn ghost" : "btn"} onClick={start} aria-busy={busy}>{busy ? "Starting…" : waiting ? "Start a new set instead" : "Start: 10 new questions"}</button></div>
 
-      {sets.length > 0 && (
-        <div>
+      {/* Everything else, quieter. */}
+      <section>
+        <h2 className="tiny muted" style={{ fontFamily: "inherit", fontWeight: 600, marginBottom: 6 }}>{waiting || data.suggestion || data.mix ? "Or choose something else" : "Choose a chapter"}</h2>
+        <div className="choices">
+          {data.mix && (data.suggestion || waiting) && (
+            <button type="button" onClick={() => start("mix", { mode: "mixed" })} disabled={Boolean(busy)} aria-busy={busy === "mix"}>
+              <span><span className="t">{busy === "mix" ? "Starting…" : "Mixed, like my last paper"}</span><span className="muted tiny">All {data.mix.chapters} chapters of {data.mix.title}</span></span>
+              <Chevron />
+            </button>
+          )}
+          <button type="button" onClick={() => setPicking(!picking)} aria-expanded={picking}>
+            <span><span className="t">Pick a subject and chapter</span><span className="muted tiny">Any chapter, even one not tested yet</span></span>
+            <span style={{ transform: picking ? "rotate(90deg)" : "none", display: "inline-flex" }}><Chevron /></span>
+          </button>
+          {picking && (
+            <div className="picker stack">
+              <div className="row" role="group" aria-label="Subject">
+                {data.subjects.map((s) => (
+                  <button
+                    key={s.name}
+                    type="button"
+                    className={`chip${s.name === subject ? " on" : ""}`}
+                    aria-pressed={s.name === subject}
+                    onClick={() => {
+                      setSubject(s.name);
+                      setChapter(null);
+                    }}
+                  >
+                    {s.name}
+                  </button>
+                ))}
+              </div>
+              <div role="radiogroup" aria-label="Chapter">
+                {chapters.map((c) => (
+                  <label key={c.topic} className={`chapter${chapter === c.topic ? " on" : ""}`}>
+                    <input type="radio" name="chapter" checked={chapter === c.topic} onChange={() => setChapter(c.topic)} />
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      {c.topic}
+                      <span className="muted tiny" style={{ display: "block" }}>{c.line}</span>
+                    </span>
+                    <span className={PILL[c.status].cls}>{PILL[c.status].label}</span>
+                  </label>
+                ))}
+              </div>
+              <button
+                className="btn wide"
+                disabled={!chapter || Boolean(busy)}
+                aria-busy={busy === "chapter"}
+                onClick={() => start("chapter", { mode: "chapter", subject, topic: chapter })}
+              >
+                {busy === "chapter" ? "Starting…" : chapter ? `Start 10 questions on ${chapter}` : "Pick a chapter"}
+              </button>
+              <p className="muted tiny" style={{ margin: 0 }}>Chapters from the NCERT Class 8 books, plus any from your papers. Every question is checked by a second solve before you see it.</p>
+            </div>
+          )}
+          {data.check.waiting ? (
+            <Link href={`/self-test/${data.check.waiting}`} className="choice-link">
+              <span><span className="t">Check what you fixed</span><span className="muted tiny">Your check questions are ready</span></span>
+              <Chevron />
+            </Link>
+          ) : data.check.due > 0 ? (
+            <button type="button" onClick={() => start("check", { recheck: true })} disabled={Boolean(busy)} aria-busy={busy === "check"}>
+              <span><span className="t">{busy === "check" ? "Starting…" : "Check what you fixed"}</span><span className="muted tiny">{data.check.due} {data.check.due === 1 ? "idea is" : "ideas are"} due for a check</span></span>
+              <Chevron />
+            </button>
+          ) : data.check.next ? (
+            <div className="choice-note">
+              <span><span className="t">Check what you fixed</span><span className="muted tiny">Next check on {day(data.check.next)}</span></span>
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      {data.sets.length > 0 && (
+        <section>
           <h2 style={{ marginBottom: 10 }}>Your earlier sets</h2>
           <div className="card list" style={{ padding: "4px 18px" }}>
-            {sets.map((s) => (
+            {data.sets.map((s) => (
               <Link key={s.id} href={`/self-test/${s.id}`}>
-                <div className="t">{s.recheck ? "Check again: " : ""}{s.topics.join(", ")}</div>
+                <div className="t">
+                  {s.recheck ? "Check: " : s.mode === "mixed" ? "Mixed: " : s.mode === "chapter" ? "Chapter: " : ""}
+                  {s.mode === "mixed" ? s.basis : s.topics.join(", ")}
+                </div>
                 <div className="muted tiny">
                   {s.status === "building"
                     ? "Being written"
@@ -129,7 +220,7 @@ export default function SelfTestHome() {
               </Link>
             ))}
           </div>
-        </div>
+        </section>
       )}
     </div>
   );

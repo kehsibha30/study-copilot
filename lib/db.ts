@@ -42,6 +42,14 @@ export async function saveDoc<T extends { id: string; createdAt: string }>(table
   if (error) throw new Error(`Could not save ${table}/${doc.id}: ${error.message}`);
 }
 
+// Adds a new row and refuses to overwrite one that exists. Returns false if the id was already taken.
+export async function insertDoc<T extends { id: string; createdAt: string }>(table: DocTable, doc: T): Promise<boolean> {
+  const { error } = await db().from(table).insert({ id: doc.id, data: doc, created_at: doc.createdAt, version: 0 });
+  if (!error) return true;
+  if (error.code === "23505") return false; // unique violation: someone else created it a moment ago
+  throw new Error(`Could not save ${table}/${doc.id}: ${error.message}`);
+}
+
 // Read, change, write back, but only if nobody else wrote in between (the version must still match).
 // If someone did, read again and re-apply the change. Two background saves can therefore never
 // overwrite each other, the same guarantee the one-process file version had.

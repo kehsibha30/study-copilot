@@ -89,7 +89,7 @@ export default function TopicPage() {
           <div className="row" style={{ marginTop: 6 }}>
             {open && <Link href={open.href} className="btn ghost">Practise &ldquo;{open.name}&rdquo;</Link>}
             {topic.canTest && (
-              <Link href={`/self-test?topic=${encodeURIComponent(`${topic.subject}|${topic.topic}`)}`} className="btn ghost">Test this topic</Link>
+              <Link href={`/self-test?topic=${encodeURIComponent(`${topic.subject}|${topic.topic}`)}`} className="btn ghost">Practise this chapter</Link>
             )}
           </div>
         )}

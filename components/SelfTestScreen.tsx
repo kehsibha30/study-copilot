@@ -62,7 +62,7 @@ export default function SelfTestScreen() {
     return (
       <div className="stack">
         <h1>We could not find that set</h1>
-        <p><Link href="/self-test" className="btn">Test yourself</Link></p>
+        <p><Link href="/self-test" className="btn">Practice</Link></p>
       </div>
     );
   }
@@ -88,7 +88,7 @@ export default function SelfTestScreen() {
   if (test.status === "failed") {
     return (
       <div className="stack" style={{ gap: 18 }}>
-        <h1>{test.recheck ? "Check again" : "Test yourself"}</h1>
+        <h1>{test.recheck ? "Check again" : "Practice"}</h1>
         <div className="card stack">
           <p>{test.error}</p>
           <div><button className="btn" onClick={() => move({ type: "retry" })}>Try again</button></div>
@@ -118,7 +118,7 @@ export default function SelfTestScreen() {
           </>
         ) : (
           <>
-            <h1>{test.recheck ? "Check again" : "Test yourself"}</h1>
+            <h1>{test.recheck ? "Check again" : "Practice"}</h1>
             <p className="lede">
               {test.recheck
                 ? `${test.questions.length === 1 ? "1 new question" : `${test.questions.length} new questions`} on things you practised a few days ago. No hints.`
@@ -204,7 +204,7 @@ export default function SelfTestScreen() {
               </div>
             </div>
           </details>
-          {!test.recheck && <p style={{ marginTop: 12 }}><Link href="/self-test">Test yourself again</Link></p>}
+          {!test.recheck && <p style={{ marginTop: 12 }}><Link href="/self-test">Practise again</Link></p>}
         </div>
       )}
     </div>

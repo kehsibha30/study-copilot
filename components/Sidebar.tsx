@@ -12,6 +12,8 @@ export default function Sidebar() {
 
   // Refresh the list when the page changes and whenever a paper moves to a new stage.
   useEffect(() => {
+    // Signed out on the sign-in page: there is no list to load.
+    if (path === "/login") return;
     let alive = true;
     const load = () =>
       fetch("/api/papers")
@@ -37,7 +39,7 @@ export default function Sidebar() {
       <nav className="nav" aria-label="Main">
         <Link href="/" className={path === "/" ? "on" : ""}>Upload a paper</Link>
         <Link href="/work-on" className={path === "/work-on" ? "on" : ""}>What to work on</Link>
-        <Link href="/self-test" className={path.startsWith("/self-test") ? "on" : ""}>Test yourself</Link>
+        <Link href="/self-test" className={path.startsWith("/self-test") ? "on" : ""}>Practice</Link>
         <Link href="/report" className={path === "/report" ? "on" : ""}>Report</Link>
       </nav>
       {papers.length > 0 && (

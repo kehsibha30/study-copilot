@@ -3,67 +3,157 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { day } from "@/lib/format";
+import { story, type Reader, type Weak } from "@/lib/story";
 import type { ConceptRow, TopicRow, WorkOn } from "@/lib/workon";
 
-// The report a parent reads. Counts and dates only, worked out from the papers and sets each time it is opened.
+const READER_KEY = "report-reader";
+
+const WEAK: Record<Weak["status"], { label: string; cls: string }> = {
+  to_fix: { label: "To fix", cls: "pill bad" },
+  check_due: { label: "Check due", cls: "pill warn" },
+  check_later: { label: "Check to come", cls: "pill warn" },
+  practice: { label: "Missed in practice", cls: "pill bad" },
+};
+
+// One page for the student and the parent: a short summary, strengths, weak spots and a 2-week plan, all worked
+// out from his papers and practice each time it is opened (lib/story.ts). The parent view adds the detail behind it.
 export default function ReportPage() {
   const [r, setR] = useState<WorkOn | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reader, setReader] = useState<Reader>("parent");
+  const [now, setNow] = useState(0);
 
   useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(READER_KEY);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- restoring this device's last choice, not derivable at render time
+      if (saved === "student" || saved === "parent") setReader(saved);
+    } catch {
+      // Storage blocked: the default view is fine.
+    }
     fetch("/api/work-on", { cache: "no-store" })
       .then((res) => res.json())
-      .then((d) => setR(d.report))
+      .then((d) => {
+        setNow(Date.now());
+        setR(d.report);
+      })
       .catch(() => setError("We could not load this. Refresh the page to try again."));
   }, []);
 
-  if (error) return <div className="error" role="alert">{error}</div>;
-  if (!r) return <p className="muted">Looking through the papers…</p>;
+  function choose(next: Reader) {
+    setReader(next);
+    try {
+      window.localStorage.setItem(READER_KEY, next);
+    } catch {
+      // Not remembered on this device; nothing else changes.
+    }
+  }
 
-  if (r.papers === 0) {
+  if (error) return <div className="error" role="alert">{error}</div>;
+  if (!r) return <p className="muted">Putting the report together…</p>;
+
+  if (r.papers === 0 && r.setsDone === 0) {
     return (
       <div className="stack" style={{ gap: 18 }}>
         <div>
           <h1>Report</h1>
-          <p className="lede">Nothing to report yet. It starts with the first paper and builds up with every paper after that.</p>
+          <p className="lede">Nothing to report yet. It starts with the first paper or practice set, and builds up with each one.</p>
         </div>
-        <div><Link href="/" className="btn">Upload a paper</Link></div>
+        <div className="row">
+          <Link href="/" className="btn">Upload a paper</Link>
+          <Link href="/self-test" className="btn ghost">Practise a chapter</Link>
+        </div>
       </div>
     );
   }
 
-  const right = r.paperRows.reduce((s, p) => s + p.right, 0);
-  const counted = r.paperRows.reduce((s, p) => s + p.counted, 0);
-  const practised = r.ideas.filter((c) => c.status === "practised");
-  const nextCheck = practised.map((c) => c.checkOn).filter((x): x is string => Boolean(x)).sort()[0];
+  const st = story(r, reader, r.setsDone, now);
+  const you = reader === "student";
 
   return (
-    <div className="stack" style={{ gap: 24 }}>
-      <div>
+    <div className="stack" style={{ gap: 26 }}>
+      <div className="stack" style={{ gap: 10 }}>
         <h1>Report</h1>
-        <p className="lede">
-          {r.papers === 1 ? "1 paper" : `${r.papers} papers`}
-          {r.firstAt && ` since ${day(r.firstAt)}`}: {right} of {counted} answered right. {r.ideas.length === 0 ? "No repeated mistakes found." : `${r.ideas.length} ${r.ideas.length === 1 ? "idea" : "ideas"} behind the mistakes.`}
-        </p>
+        <div className="seg" role="group" aria-label="Who is reading">
+          <button type="button" aria-pressed={you} className={you ? "on" : ""} onClick={() => choose("student")}>For the student</button>
+          <button type="button" aria-pressed={!you} className={!you ? "on" : ""} onClick={() => choose("parent")}>For the parent</button>
+        </div>
+        <p className="muted tiny" style={{ margin: 0 }}>{st.scope}{st.early && " Too early for firm trends."}</p>
       </div>
 
+      <section className="card">
+        <p className="story">{st.summary}</p>
+      </section>
+
+      <section className="stack" style={{ gap: 10 }}>
+        <h2>Strengths</h2>
+        {st.strengths.length === 0 ? (
+          <p className="muted" style={{ margin: 0 }}>
+            None to name yet. A chapter counts as a strength once it has at least 3 answers with 9 in 10 right, or 4 practice questions with 8 in 10 right.
+          </p>
+        ) : (
+          st.strengths.map((s) => (
+            <div key={`${s.subject}|${s.topic}`} className="dotline">
+              <span className="dot" aria-hidden="true" />
+              <span><span style={{ fontWeight: 500 }}>{s.topic}</span> <span className="muted tiny">{s.subject}</span><br /><span className="muted tiny">{s.line}</span></span>
+            </div>
+          ))
+        )}
+      </section>
+
+      <section className="stack" style={{ gap: 10 }}>
+        <h2>Weak spots</h2>
+        {st.weak.length === 0 ? (
+          <p className="muted" style={{ margin: 0 }}>Nothing open. Every mistake so far has been fixed and checked.</p>
+        ) : (
+          st.weak.map((w) => (
+            <div key={`${w.status}|${w.name}`} className="card weak">
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", flexWrap: "nowrap" }}>
+                <span style={{ fontWeight: 500 }}>{w.href ? <Link href={w.href}>{w.name}</Link> : w.name}</span>
+                <span className={WEAK[w.status].cls}>{WEAK[w.status].label}</span>
+              </div>
+              <span className="muted tiny">{w.status === "practice" ? w.subject : `${w.subject} · ${w.topic}`}. {w.line}</span>
+            </div>
+          ))
+        )}
+      </section>
+
+      <section className="stack" style={{ gap: 6 }}>
+        <h2>Next 2 weeks</h2>
+        <ol className="plan">
+          {st.plan.map((p, i) => (
+            <li key={i}>
+              <span className="muted tiny">{p.when}</span>
+              <span>
+                {p.on && <span style={{ fontWeight: 500 }}>{p.label}: </span>}
+                {p.href ? <Link href={p.href}>{p.text}</Link> : p.text}
+              </span>
+            </li>
+          ))}
+        </ol>
+        <p className="muted tiny" style={{ margin: 0 }}>The plan is redone each time this page opens, from what {you ? "you have" : "he has"} done.</p>
+      </section>
+
+      {!you && <Behind r={r} />}
+    </div>
+  );
+}
+
+// The detail behind the story, for the parent: use, ideas, chapters, papers, and how far to trust it.
+function Behind({ r }: { r: WorkOn }) {
+  return (
+    <div className="stack" style={{ gap: 24, borderTop: "1px solid var(--line)", paddingTop: 22 }}>
+      <h2>Behind the numbers</h2>
       <div className="stats">
         <div className="stat"><div className="l">Days used, last 7</div><div className="n">{r.daysActive} of 7</div></div>
         <div className="stat"><div className="l">Fixed and held</div><div className="n">{r.held.length}</div></div>
-        <div className="stat"><div className="l">Check to come</div><div className="n">{practised.length}</div></div>
+        <div className="stat"><div className="l">Check to come</div><div className="n">{r.ideas.filter((c) => c.status === "practised").length}</div></div>
         <div className="stat"><div className="l">Still to work on</div><div className="n">{r.open}</div></div>
       </div>
 
-      {r.held.length === 0 && r.ideas.length > 0 && (
-        <p className="notice">
-          Nothing counts as fixed yet. An idea is fixed only when a new question on it is answered right at least 5 days after it was practised.
-          {nextCheck ? ` The first check is due on ${day(nextCheck)}.` : " No idea has been practised yet."}
-        </p>
-      )}
-
       {r.ideas.length > 0 && (
         <div>
-          <h2 style={{ marginBottom: 10 }}>Ideas</h2>
+          <h3 style={{ marginBottom: 10 }}>Every idea</h3>
           <div className="card" style={{ padding: "6px 22px" }}>
             {r.ideas.map((c) => (
               <div className="trow" key={c.name}>
@@ -78,41 +168,61 @@ export default function ReportPage() {
         </div>
       )}
 
-      <div>
-        <h2 style={{ marginBottom: 10 }}>Subjects and topics</h2>
-        <div className="stack">
-          {r.subjects.map((s) => (
-            <div className="card" key={s.name} style={{ padding: "14px 22px 6px" }}>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <h3>{s.name}</h3>
-                <span className="muted tiny">{s.counted === 0 ? "None answered" : `${s.right} of ${s.counted} answered right`}</span>
+      {r.subjects.length > 0 && (
+        <div>
+          <h3 style={{ marginBottom: 10 }}>Subjects and chapters</h3>
+          <div className="stack">
+            {r.subjects.map((s) => (
+              <div className="card" key={s.name} style={{ padding: "14px 22px 6px" }}>
+                <div className="row" style={{ justifyContent: "space-between" }}>
+                  <h3>{s.name}</h3>
+                  <span className="muted tiny">{s.counted === 0 ? "None answered" : `${s.right} of ${s.counted} answered right`}</span>
+                </div>
+                <div style={{ marginTop: 6 }}>
+                  {s.topics.filter((t) => t.status !== "too_few").map((t) => <Topic key={t.name} subject={s.name} t={t} />)}
+                </div>
+                <Few topics={s.topics.filter((t) => t.status === "too_few")} />
               </div>
-              <div style={{ marginTop: 6 }}>
-                {s.topics.filter((t) => t.status !== "too_few").map((t) => <Topic key={t.name} subject={s.name} t={t} />)}
-              </div>
-              {/* Topics with nothing sure to say are kept to one quiet line, not a wall of rows. */}
-              <Few topics={s.topics.filter((t) => t.status === "too_few")} />
-            </div>
-          ))}
+            ))}
+          </div>
+          <p className="muted tiny" style={{ marginTop: 10 }}>
+            Strong means at least 5 questions over 2 or more papers with 9 in 10 right. Fewer than 3 questions is too few to tell.
+          </p>
         </div>
-        <p className="muted tiny" style={{ marginTop: 10 }}>
-          Strong means at least 5 questions over 2 or more papers with 9 in 10 right. Fewer than 3 questions is too few to tell.
-        </p>
-      </div>
+      )}
 
-      <div>
-        <h2 style={{ marginBottom: 10 }}>Papers</h2>
-        <div className="card list" style={{ padding: "4px 18px" }}>
-          {r.paperRows.map((p) => (
-            <Link key={p.id} href={`/papers/${p.id}`}>
-              <div className="t">{p.title}</div>
-              <div className="muted tiny">
-                {p.right} of {p.counted} answered right{p.skipped > 0 && ` · ${p.skipped} not answered`}{p.notCounted > 0 && ` · ${p.notCounted} not counted`} · {day(p.at)}
+      {r.practice.length > 0 && (
+        <div>
+          <h3 style={{ marginBottom: 10 }}>Chapter practice</h3>
+          <div className="card" style={{ padding: "6px 22px" }}>
+            {r.practice.map((p) => (
+              <div className="trow" key={`${p.subject}|${p.topic}`}>
+                <div>
+                  <div>{p.topic}</div>
+                  <div className="sub">{p.subject} · last on {day(p.last)}</div>
+                </div>
+                <span className="muted tiny">{p.right} of {p.total} right</span>
               </div>
-            </Link>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
+
+      {r.paperRows.length > 0 && (
+        <div>
+          <h3 style={{ marginBottom: 10 }}>Papers</h3>
+          <div className="card list" style={{ padding: "4px 18px" }}>
+            {r.paperRows.map((p) => (
+              <Link key={p.id} href={`/papers/${p.id}`}>
+                <div className="t">{p.title}</div>
+                <div className="muted tiny">
+                  {p.right} of {p.counted} answered right{p.skipped > 0 && ` · ${p.skipped} not answered`}{p.notCounted > 0 && ` · ${p.notCounted} not counted`} · {day(p.at)}
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       <details className="quiet">
         <summary>How far to trust this</summary>
@@ -126,8 +236,8 @@ export default function ReportPage() {
             about 1 answer in 70 was wrong and not caught.
           </p>
           <p>
-            &ldquo;Fixed and held&rdquo; rests on the app&rsquo;s own new questions, not on a school or coaching test. The paper-by-paper counts under each topic are
-            from real papers.
+            Practice questions are written by the AI and kept only when a second, separate solve agrees with the answer. Strengths and weak spots from
+            practice rest on those questions, not on a school or coaching test.
           </p>
           <p>
             The AI has answered {r.answersGiven} of his own {r.answersGiven === 1 ? "question" : "questions"}. He reported {r.answersReported} of those answers as
@@ -198,7 +308,7 @@ function Topic({ subject, t }: { subject: string; t: TopicRow }) {
           </div>
         )}
         {t.canTest ? (
-          <div><Link href={`/self-test?topic=${encodeURIComponent(`${subject}|${t.name}`)}`} className="btn ghost">Test this topic now</Link></div>
+          <div><Link href={`/self-test?topic=${encodeURIComponent(`${subject}|${t.name}`)}`} className="btn ghost">Practise this chapter now</Link></div>
         ) : (
           t.status === "strong" && <div>New sets carry a question from this topic, to check it has stayed.</div>
         )}
