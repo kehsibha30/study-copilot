@@ -104,7 +104,13 @@ export default function ReportPage() {
       <section className="stack" style={{ gap: 10 }}>
         <h2>Weak spots</h2>
         {st.weak.length === 0 ? (
-          <p className="muted" style={{ margin: 0 }}>Nothing open. Every mistake so far has been fixed and checked.</p>
+          <p className="muted" style={{ margin: 0 }}>
+            {r.held.length > 0
+              ? "Nothing open right now. Every idea found so far has been fixed and held on a later check."
+              : r.papers === 0
+                ? "None found yet. A weak spot shows here when a chapter has at least 3 practice answers with fewer than 6 in 10 right, or when a paper shows the idea behind a mistake."
+                : "None found yet."}
+          </p>
         ) : (
           st.weak.map((w) => (
             <div key={`${w.status}|${w.name}`} className="card weak">

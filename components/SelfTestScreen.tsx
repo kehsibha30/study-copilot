@@ -108,11 +108,18 @@ export default function SelfTestScreen() {
           <>
             <h1>You got {r.right} of {r.counted} right.</h1>
             <div className="row" style={{ marginTop: 16 }}>
-              {/* One next step: the lesson for the first idea missed, or back to the list when nothing was missed. */}
+              {/* One next step: the lesson for the first idea missed. Chapter and mixed sets go back to Practice, where the
+                  chapter now shows this score (What to work on is built from papers and can be empty). Found 16 Nov 2026:
+                  a chapter set with no paper behind it led to "Upload a paper". */}
               {r.next ? (
                 <Link href={r.next.href} className="btn">Next: practise &ldquo;{r.next.name}&rdquo;</Link>
-              ) : (
+              ) : test.mode === "mistakes" && !test.recheck ? (
                 <Link href="/work-on" className="btn">See what to work on</Link>
+              ) : (
+                <>
+                  <Link href="/self-test" className="btn">Back to Practice</Link>
+                  <Link href="/report" className="muted tiny">See your report</Link>
+                </>
               )}
             </div>
           </>
@@ -188,8 +195,13 @@ export default function SelfTestScreen() {
             <summary>How these questions were made</summary>
             <div className="inner stack muted">
               <p>
-                The AI wrote these from what you got wrong on your papers, then solved each one a second time without seeing the answer. A question
-                was used only if both agreed. The AI can still be wrong. If a question looks wrong to you, say so and it is left out of your marks.
+                {test.mode === "chapter"
+                  ? `The AI wrote these on ${test.basis ?? "this chapter"}, from the NCERT Class 8 syllabus`
+                  : test.mode === "mixed"
+                    ? `The AI wrote these on the chapters of ${test.basis ?? "your last paper"}, at its level`
+                    : "The AI wrote these from what you got wrong on your papers"}
+                , then solved each one a second time without seeing the answer. A question was used only if both agreed. The AI can still be wrong. If a
+                question looks wrong to you, say so and it is left out of your marks.
               </p>
               <p>AI cost for this set: ${test.costUsd.toFixed(2)}</p>
             </div>

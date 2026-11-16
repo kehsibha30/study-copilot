@@ -226,7 +226,7 @@ export async function markSelfTestIfStalled(test: SelfTest): Promise<SelfTest> {
 const SYSTEM =
   "You write practice questions for a school student in India, based on the ideas they got wrong on their own test papers. " +
   "Every question must be correct, have exactly one right option, and be answerable from its own words with no figure. " +
-  "Use only facts that are taught at the student's class level. Never use real people's names. " +
+  "Use only facts that are taught at the student's class level. Do not use real people's names, except scientists and discoverers that the NCERT book itself names. " +
   "Write for a 13-year-old: short plain sentences, no praise or scolding.";
 
 const WriteSchema = z.object({
@@ -691,6 +691,8 @@ export type SelfTestView = {
   error: string | null;
   topics: TopicPick[];
   recheck: boolean;
+  mode: "mistakes" | "mixed" | "chapter";
+  basis: string | null;
   submitted: boolean;
   excluded: boolean;
   costUsd: number;
@@ -738,6 +740,8 @@ export async function selfTestView(t: SelfTest): Promise<SelfTestView> {
     error: t.error ?? null,
     topics: t.topics,
     recheck: Boolean(t.recheck),
+    mode: t.mode ?? "mistakes",
+    basis: t.basis ?? null,
     submitted: done,
     excluded: Boolean(t.excluded),
     costUsd: t.cost.usd,

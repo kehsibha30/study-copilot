@@ -39,14 +39,40 @@ export default function WorkOnPage() {
   if (error) return <div className="error" role="alert">{error}</div>;
   if (!report) return <p className="muted">Looking through your papers…</p>;
 
+  // No paper yet. Chapter practice still counts: show it, and point to Practice rather than a dead end.
   if (report.papers === 0) {
+    const weak = report.practice.filter((p) => p.total > 0 && p.right / p.total < 0.6);
     return (
       <div className="stack" style={{ gap: 18 }}>
         <div>
           <h1>What to work on</h1>
-          <p className="lede">Upload a paper and mark your answers. What to work on will show here, and it builds up with every paper.</p>
+          <p className="lede">
+            {report.practice.length === 0
+              ? "Practise a chapter, or upload a test paper. What to work on builds up from both."
+              : weak.length > 0
+                ? `From your chapter practice: ${weak.map((p) => p.topic).join(", ")} ${weak.length === 1 ? "needs" : "need"} more work.`
+                : "From your chapter practice so far. A test paper adds the ideas behind your mistakes."}
+          </p>
         </div>
-        <div><Link href="/" className="btn">Upload a paper</Link></div>
+        {report.practice.length > 0 && (
+          <div className="card" style={{ padding: "6px 22px" }}>
+            {report.practice.map((p) => (
+              <div className="trow" key={`${p.subject}|${p.topic}`}>
+                <div>
+                  <div>{p.topic}</div>
+                  <div className="sub">{p.subject}</div>
+                </div>
+                <span className={p.right / p.total < 0.6 ? "pill bad" : "pill"}>{p.right} of {p.total} right</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="row">
+          <Link href={weak[0] ? `/self-test?topic=${encodeURIComponent(`${weak[0].subject}|${weak[0].topic}`)}` : "/self-test"} className="btn">
+            {weak[0] ? `Practise ${weak[0].topic} again` : "Practise a chapter"}
+          </Link>
+          <Link href="/" className="muted tiny">or upload a test paper</Link>
+        </div>
       </div>
     );
   }

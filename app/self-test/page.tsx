@@ -47,7 +47,10 @@ export default function Practice() {
         // Coming from the report with one chapter chosen (?topic=Subject|Chapter): open the picker on it.
         const asked = new URLSearchParams(window.location.search).get("topic");
         const [s, t] = asked ? asked.split("|") : [];
-        const first = d.subjects[0]?.name ?? null;
+        // Open on the subject practised last, so the chapter just done is in view with its new score.
+        const lastBasis = d.sets.find((x) => x.mode === "chapter" && x.basis)?.basis ?? "";
+        const lastSubject = d.subjects.find((x) => lastBasis.startsWith(`${x.name}: `))?.name;
+        const first = lastSubject ?? d.subjects[0]?.name ?? null;
         setSubject(s && d.subjects.some((x) => x.name === s) ? s : first);
         if (s && t) {
           setChapter(t);
