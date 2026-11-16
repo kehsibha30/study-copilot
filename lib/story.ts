@@ -6,7 +6,7 @@ import type { ConceptRow, WorkOn } from "./workon";
 export type Reader = "student" | "parent";
 
 export type Strength = { subject: string; topic: string; line: string };
-export type Weak = { name: string; subject: string; topic: string; line: string; status: "to_fix" | "check_due" | "check_later" | "practice"; href: string | null };
+export type Weak = { name: string; subject: string; topic: string; line: string; status: "to_fix" | "check_due" | "check_later" | "practice" | "speed"; href: string | null };
 export type PlanItem = { on: string | null; when: string; label: string; text: string; href: string | null };
 
 export type SpeedRow = { subject: string; topic: string; avgMs: number; n: number; label: "Slow" | "Rushed" | "Steady" };
@@ -93,6 +93,12 @@ export function story(r: WorkOn, reader: Reader, sets: number, now = Date.now())
     }
   }
 
+  // Speed drills: strong topics are strengths, slow or often-missed topics are weak spots.
+  for (const t of r.calc.topics) {
+    if (t.status === "strong") strengths.push({ subject: "Maths", topic: `Speed: ${t.label}`, line: `${t.right} of ${t.answered} right in speed drills${t.bestMs ? `, best ${Math.round(t.bestMs / 1000)} s a question` : ""}.` });
+    if (t.status === "weak") weak.push({ name: `Speed: ${t.label}`, subject: "Maths", topic: t.label, status: "speed", href: `/speed/${t.id}`, line: `${t.right} of ${t.answered} right in speed drills${t.avgMs ? `, about ${Math.round(t.avgMs / 1000)} s a question` : ""}.` });
+  }
+
   // The plan: lessons first (one a day), then a practice set, checks on their own dates, then what is missing.
   const plan: PlanItem[] = [];
   let d = 0;
@@ -117,6 +123,7 @@ export function story(r: WorkOn, reader: Reader, sets: number, now = Date.now())
   if (untried.length > 0) {
     plan.push({ when: "", on: addDays(now, Math.max(d, 3)), label: "Practice", text: `a ${untried[0]} chapter (no ${list(untried)} answers yet, and ${untried.length === 1 ? "it counts" : "they count"} for NEET)`, href: "/self-test" });
   }
+  for (const w of weak.filter((x) => x.status === "speed").slice(0, 2)) plan.push({ when: "", on: addDays(now, d++), label: "Speed", text: `${w.topic} drill`, href: w.href });
   plan.push({ when: "", on: null, label: "Next week", text: `Upload ${you ? "your" : "the"} next school test, so the plan follows what the class is doing`, href: "/" });
   plan.sort((a, b) => (a.on ?? "9").localeCompare(b.on ?? "9"));
   const endOfToday = Date.parse(addDays(now, 1));

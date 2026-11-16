@@ -75,7 +75,8 @@ async function update(id: string, change: (t: SelfTest) => void): Promise<SelfTe
 }
 
 export async function listSelfTests(): Promise<SelfTest[]> {
-  const tests = await listDocs<SelfTest>("self_tests");
+  // Speed drills share the table (ids start with "speed-") and are not practice sets.
+  const tests = (await listDocs<SelfTest>("self_tests")).filter((t) => !t.id.startsWith("speed-"));
   return tests.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 

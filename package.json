@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check:speed": "node --experimental-strip-types scripts/check-speed.mts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",

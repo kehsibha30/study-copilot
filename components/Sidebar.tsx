@@ -40,6 +40,7 @@ export default function Sidebar() {
         <Link href="/" className={path === "/" ? "on" : ""}>Upload a paper</Link>
         <Link href="/work-on" className={path === "/work-on" ? "on" : ""}>What to work on</Link>
         <Link href="/self-test" className={path.startsWith("/self-test") ? "on" : ""}>Practice</Link>
+        <Link href="/speed" className={path.startsWith("/speed") ? "on" : ""}>Speed</Link>
         <Link href="/report" className={path === "/report" ? "on" : ""}>Report</Link>
       </nav>
       {papers.length > 0 && (

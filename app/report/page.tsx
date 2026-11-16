@@ -13,6 +13,7 @@ const WEAK: Record<Weak["status"], { label: string; cls: string }> = {
   check_due: { label: "Check due", cls: "pill warn" },
   check_later: { label: "Check to come", cls: "pill warn" },
   practice: { label: "Missed in practice", cls: "pill bad" },
+  speed: { label: "Speed drill", cls: "pill warn" },
 };
 
 // One page for the student and the parent: a short summary, strengths, weak spots and a 2-week plan, all worked
@@ -53,7 +54,7 @@ export default function ReportPage() {
   if (!r) return <p className="muted">Putting the report together…</p>;
 
   // Before any work: the real layout, each section saying in one line what will appear (decision 16 Nov 2026).
-  if (r.papers === 0 && r.setsDone === 0) {
+  if (r.papers === 0 && r.setsDone === 0 && r.calc.runs === 0) {
     const parts: [string, string][] = [
       ["Strengths", "Chapters answered right again and again. Needs a few answers per chapter."],
       ["Weak spots", "The ideas behind wrong answers, and whether each one is fixed yet."],
@@ -152,6 +153,27 @@ export default function ReportPage() {
             ))}
           </div>
           {st.speed.lines.map((l) => <p key={l} style={{ margin: 0 }}>{l}</p>)}
+        </section>
+      )}
+
+      {r.calc.runs > 0 && (
+        <section className="stack" style={{ gap: 10 }}>
+          <h2>Speed drills</h2>
+          <div className="card" style={{ padding: "4px 16px" }}>
+            {r.calc.topics.filter((t) => t.answered > 0).map((t) => (
+              <div key={t.id} className="speedrow">
+                <span>{t.label}</span>
+                <span className="num">{t.right}/{t.answered}</span>
+                <span className={t.status === "weak" ? "pill warn" : "pill"}>{t.level ?? (t.avgMs ? `${Math.round(t.avgMs / 1000)} s` : "Started")}</span>
+              </div>
+            ))}
+          </div>
+          {r.calc.wrong.slice(0, 6).map((w) => (
+            <div key={`${w.at}|${w.q}`} className="card weak">
+              <span style={{ fontWeight: 500 }}>{w.q}</span>
+              <span className="muted tiny">{w.label}. {you ? "You" : "He"} wrote {w.said || "nothing"}; the answer is {w.a}.</span>
+            </div>
+          ))}
         </section>
       )}
 

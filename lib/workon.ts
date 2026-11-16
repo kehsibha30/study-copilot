@@ -4,6 +4,8 @@ import { stage, verdict } from "./grade";
 import { SUBJECTS } from "./pipeline";
 import { listSelfTests, type TopicPick } from "./selftest";
 import { listPapers } from "./store";
+import { calc as loadCalc } from "./speed/run";
+import type { Calc } from "./speed/stats";
 
 // "What to work on" and the report: everything the student's finished papers, lessons and sets show,
 // grouped subject > topic > idea. Nothing is stored for this. It is worked out from the papers and sets
@@ -86,6 +88,8 @@ export type WorkOn = {
   speed: { subject: string; topic: string; avgMs: number; n: number; wrong: number; totalMs: number }[];
   // Wrong options he picked, by the mistake they usually come from, per chapter. Most frequent first.
   traps: { subject: string; topic: string; trap: string; count: number }[];
+  // Speed drills: per topic strengths and weak spots, and the wrong answers he gave (from /speed).
+  calc: Calc;
 };
 
 const NOT_SORTED = "Not sorted yet";
@@ -253,6 +257,8 @@ export async function workOn(now = Date.now()): Promise<WorkOn> {
     for (const [key, s] of tally) concepts.get(key)?.events.push({ at: t.submittedAt, kind: s.right === s.total ? "set_pass" : "set_miss" });
   }
 
+  const calc = await loadCalc();
+  for (const at of calc.days) activity.push(at);
   const doubts = await listTopicDoubts();
   for (const d of doubts) {
     activity.push(d.at);
@@ -393,5 +399,6 @@ export async function workOn(now = Date.now()): Promise<WorkOn> {
     speed: [...speed.values()].sort((a, b) => b.avgMs - a.avgMs),
     traps: [...traps.values()].sort((a, b) => b.count - a.count),
     practice: [...practice.values()].sort((a, b) => b.last.localeCompare(a.last)),
+    calc,
   };
 }
