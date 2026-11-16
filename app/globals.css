@@ -287,3 +287,10 @@ details.topic .inner { padding: 0 0 16px; font-size: 15px; color: var(--muted); 
 .speedrow { display: grid; grid-template-columns: minmax(0, 1fr) 52px 76px; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
 .speedrow:first-child { border-top: 0; }
 .speedrow .pill { text-align: center; }
+
+/* Upload: the pages about to be read, in order. */
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+.thumb { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid #e4dbd1; border-radius: var(--radius); background: var(--card); }
+.thumb img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 6px; background: #f4efe9; }
+.thumb .row { gap: 8px; }
+.thumb .linkbtn:disabled { color: var(--muted); cursor: not-allowed; text-decoration: none; }

@@ -3,6 +3,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { askJson, RefusalError, StepError } from "./claude";
 import { norm } from "./grade";
 import { pageOf } from "./pages";
+import { mergeSameQuestion } from "./merge";
 import { appUrl, INTERNAL_HEADER, internalToken } from "./auth";
 import { STALE_MS, listPapers, loadPaper, readUpload, updatePaper, updatePaperIf, type Idea, type KeyEntry, type MistakeNote, type Paper, type Question, type StepName } from "./store";
 
@@ -162,6 +163,8 @@ const READ_PROMPT = `This is a test paper a student uploaded (a PDF, or photos o
 
 List every question on it, in order.
 
+Photos may overlap, or show the same page more than once. If a question appears on more than one photo, list it once for each photo it appears on, with its own page number, and read each copy on its own.
+
 For each question:
 - n: the question number printed on the paper.
 - section: the subject or section heading it sits under (for example "Physics"). Use "" if there is none.
@@ -198,11 +201,8 @@ async function readPaper(paper: Paper) {
     content: [...(await paperBlocks(paper)), { type: "text", text: READ_PROMPT }],
   });
 
-  const seen = new Set<number>();
   const questions: Question[] = [];
-  for (const q of [...out.questions].sort((a, b) => a.n - b.n)) {
-    if (seen.has(q.n)) continue;
-    seen.add(q.n);
+  for (const q of mergeSameQuestion(out.questions)) {
     const options = q.options.map((o) => ({ label: norm(o.label), text: o.text.trim() })).filter((o) => o.label);
     const type = q.type === "mcq" && options.length >= 2 ? "mcq" : "written";
     const marked = norm(q.marked_answer);
