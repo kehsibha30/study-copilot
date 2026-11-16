@@ -266,3 +266,24 @@ details.topic .inner { padding: 0 0 16px; font-size: 15px; color: var(--muted); 
 .plan li:last-child { border-bottom: 1px solid var(--line); }
 /* The chapter list can be long; the Start button stays in reach while picking. */
 .picker > .btn.wide { position: sticky; bottom: 12px; box-shadow: 0 4px 14px rgba(43, 38, 35, 0.18); }
+
+/* Practice: one question at a time, and the timed review */
+.bar-track { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; }
+.bar-track > div { height: 100%; background: var(--accent); }
+.split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-size: 14px; }
+.split > div { padding: 10px; border-radius: 10px; }
+.split .good { background: var(--good-soft); color: var(--good-ink); }
+.split .warn { background: var(--warn-soft); color: var(--warn-ink); }
+.split .bad { background: var(--bad-soft); color: var(--bad-ink); }
+.split .plain { background: #efe9e2; color: #5e5650; }
+.qtime { display: grid; grid-template-columns: 24px minmax(0, 1fr) 48px; gap: 8px; align-items: center; font-size: 14px; padding: 7px 0; border-top: 1px solid var(--line); color: var(--ink); }
+.qtime:hover { background: #fbf8f4; text-decoration: none; }
+.qbar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.qbar > span:first-child { height: 8px; border-radius: 99px; flex-shrink: 0; max-width: 60%; }
+.qbar .good { background: var(--accent); } .qbar .warn { background: #c9a24a; } .qbar .bad { background: #b5523f; } .qbar .plain { background: #ddd4ca; }
+.qbar .t { background: none; white-space: nowrap; }
+.qbar .t.good { color: var(--good-ink); } .qbar .t.warn { color: var(--warn-ink); } .qbar .t.bad { color: var(--bad-ink); } .qbar .t.plain { color: var(--muted); }
+.num { font-variant-numeric: tabular-nums; text-align: right; }
+.speedrow { display: grid; grid-template-columns: minmax(0, 1fr) 52px 76px; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.speedrow:first-child { border-top: 0; }
+.speedrow .pill { text-align: center; }

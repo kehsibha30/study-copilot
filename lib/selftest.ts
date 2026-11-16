@@ -11,13 +11,18 @@ import { insertDoc, listDocs, loadDoc, updateDoc } from "./db";
 // pass disagrees with is dropped before the student sees it.
 
 const WANT = 10;
+export const MAX_QUESTION_MS = 5 * 60_000;
+// The pace he is measured against: about one minute a question, as in NEET.
+export const PACE_MS = 60_000;
 const BY_LEVEL: Record<number, number> = { 1: 3, 2: 4, 3: 3 };
 
 export type TestQuestion = {
   concept: string;
   level: 1 | 2 | 3;
   text: string;
-  options: { text: string; right: boolean }[];
+  // why and trap: set on wrong options. why: what mistake leads to this option. trap: that mistake as a short name,
+  // reused across sets so the Report can count the traps he falls into again and again.
+  options: { text: string; right: boolean; why?: string; trap?: string }[];
   explain: string;
   // Set on a question from a topic the student is already good at. It checks the topic has not slipped.
   keep?: TopicPick;
@@ -43,6 +48,9 @@ export type SelfTest = {
   answers: Record<string, number>; // question index -> option index
   submittedAt?: string;
   flagged: number[];
+  // Active time on each question in ms (question index -> ms), measured in the browser while the question is on screen
+  // and the app is in front. One question counts at most MAX_QUESTION_MS. Only before hand-in.
+  times?: Record<string, number>;
   excluded?: boolean;
   // mistakes (the default): new questions on ideas he got wrong. mixed: all the chapters of his latest paper, at
   // its level. chapter: one chapter from the syllabus, which may have no paper behind it yet.
@@ -235,7 +243,7 @@ const WriteSchema = z.object({
       concept: z.string(),
       level: z.number(),
       text: z.string(),
-      options: z.array(z.object({ text: z.string(), right: z.boolean() })),
+      options: z.array(z.object({ text: z.string(), right: z.boolean(), why: z.string(), trap: z.string() })),
       explain: z.string(),
     })
   ),
@@ -309,6 +317,7 @@ async function writeQuestions(test: SelfTest): Promise<TestQuestion[]> {
     .filter((t) => t.id !== test.id)
     .flatMap((t) => t.questions.filter((q) => !q.keep && ideaKeys.has(q.concept.trim().toLowerCase())).map((q) => q.text))
     .slice(0, 30);
+  const traps = trapsOf((await listSelfTests()).flatMap((t) => t.questions.filter((q) => !q.keep && ideaKeys.has(q.concept.trim().toLowerCase()))));
   const target = test.recheck ? ideas.length : WANT;
   const has = (list: TestQuestion[], name: string) => list.some((k) => k.concept === name);
   const names = new Map(ideas.map((s) => [s.name.trim().toLowerCase(), s.name]));
@@ -355,9 +364,10 @@ For each question:
 - ${levels}
 - text: the question. It must be answerable from its own words, with no figure. It must be a new question: a different situation, different examples and different options from the student's own question. Rewording that question, or asking its opposite with the same list or the same options, does not count.
 - options: four options, exactly one right. Wrong options must be ones a student could really fall for. Do not use "all of these", "none of these", or options that refer to other options.
+  For each wrong option, why: one sentence starting "This is what you get if you" that names the mistake leading to it; and trap: that mistake as a short name of at most 6 plain words (for example "Thinks pressure is the same at every depth"). Use the same trap name whenever the same mistake applies. For the right option, why and trap are empty strings.
 - explain: one or two sentences showing why the right option is right.
 
-Check every fact and every piece of arithmetic. Maths in plain text (x^2, 3/4, 10^5).${
+Check every fact and every piece of arithmetic. Maths in plain text (x^2, 3/4, 10^5).${trapHint(traps)}${
             done.length ? `\n\nThese are already written. Do not repeat them:\n${done.map((k) => `- ${k}`).join("\n")}` : ""
           }`,
         },
@@ -367,7 +377,7 @@ Check every fact and every piece of arithmetic. Maths in plain text (x^2, 3/4, 1
     const drafted: TestQuestion[] = [];
     for (const q of out.questions) {
       const concept = names.get(q.concept.trim().toLowerCase());
-      const options = q.options.map((o) => ({ text: o.text.trim(), right: o.right })).filter((o) => o.text);
+      const options = q.options.map((o) => ({ text: o.text.trim(), right: o.right, ...(o.right ? {} : { why: o.why.trim(), trap: o.trap.trim() }) })).filter((o) => o.text);
       if (!concept || !q.text.trim() || options.length !== 4 || options.filter((o) => o.right).length !== 1) continue;
       // Not new: too close to a question from the student's paper, or to one already kept.
       const copies = (other: string) => overlap(q.text, other) >= 0.7;
@@ -458,6 +468,7 @@ async function writeTopicQuestions(test: SelfTest): Promise<TestQuestion[]> {
     .flatMap((t) => t.questions.filter((q) => q.topic && wanted.has(key(q.topic))).map((q) => q.text))
     .slice(0, 40);
   const names = new Map(topics.map((t) => [t.topic.trim().toLowerCase(), t]));
+  const traps = trapsOf((await listSelfTests()).flatMap((t) => t.questions.filter((q) => q.topic && wanted.has(key(q.topic)))));
   const onCost = async (usd: number) =>
     await update(test.id, (t) => {
       t.cost.usd = Number((t.cost.usd + usd).toFixed(5));
@@ -497,9 +508,10 @@ For each question:
 - level: 1, 2 or 3. Level 1 is a direct use of one idea. Level 2 is like a school test question. Level 3 is harder: two steps, or an idea in a new setting, still inside this class's syllabus. Write about the same number at each level.
 - text: the question. It must be answerable from its own words, with no figure.
 - options: four options, exactly one right. Wrong options must be ones a student could really fall for. Do not use "all of these", "none of these", or options that refer to other options.
+  For each wrong option, why: one sentence starting "This is what you get if you" that names the mistake leading to it; and trap: that mistake as a short name of at most 6 plain words (for example "Thinks pressure is the same at every depth"). Use the same trap name whenever the same mistake applies. For the right option, why and trap are empty strings.
 - explain: one or two sentences showing why the right option is right.
 
-Check every fact and every piece of arithmetic. Maths in plain text (x^2, 3/4, 10^5).${done.length ? `\n\nThese are already written or already seen by the student. Do not repeat them:\n${done.map((k) => `- ${k}`).join("\n")}` : ""}`,
+Check every fact and every piece of arithmetic. Maths in plain text (x^2, 3/4, 10^5).${trapHint(traps)}${done.length ? `\n\nThese are already written or already seen by the student. Do not repeat them:\n${done.map((k) => `- ${k}`).join("\n")}` : ""}`,
         },
       ],
     });
@@ -507,7 +519,7 @@ Check every fact and every piece of arithmetic. Maths in plain text (x^2, 3/4, 1
     const drafted: TestQuestion[] = [];
     for (const q of out.questions) {
       const topic = names.get(q.concept.trim().toLowerCase());
-      const options = q.options.map((o) => ({ text: o.text.trim(), right: o.right })).filter((o) => o.text);
+      const options = q.options.map((o) => ({ text: o.text.trim(), right: o.right, ...(o.right ? {} : { why: o.why.trim(), trap: o.trap.trim() }) })).filter((o) => o.text);
       if (!topic || !q.text.trim() || options.length !== 4 || options.filter((o) => o.right).length !== 1) continue;
       const copies = (other: string) => overlap(q.text, other) >= 0.7;
       if (sampleTexts.some(copies) || done.some(copies) || drafted.some((d) => copies(d.text))) continue;
@@ -557,6 +569,17 @@ Give only the numbers.`,
   return chosen.sort((a, b) => a.level - b.level);
 }
 
+// Trap names already used on these questions, so the writer reuses them and the Report can count repeats.
+function trapsOf(questions: TestQuestion[]): string[] {
+  const out: string[] = [];
+  for (const q of questions) for (const o of q.options) if (o.trap && !out.some((x) => x.toLowerCase() === o.trap!.toLowerCase())) out.push(o.trap);
+  return out.slice(0, 20);
+}
+
+function trapHint(traps: string[]): string {
+  return traps.length ? `\n\nTrap names already used for these ideas or chapters. When a wrong option comes from one of these mistakes, use its name exactly:\n${traps.map((t) => `- ${t}`).join("\n")}` : "";
+}
+
 // One question from each topic the student is already good at (up to two), so the set also shows whether
 // a strong topic has slipped. These are extra: if they cannot be written or checked, the set goes ahead without them.
 async function keepQuestions(test: SelfTest, taken: string[], onCost: (usd: number) => void): Promise<TestQuestion[]> {
@@ -592,6 +615,7 @@ For each question:
 - level: always 2.
 - text: the question. It must be answerable from its own words, with no figure, and must be a new question.
 - options: four options, exactly one right. Wrong options must be ones a student could really fall for. Do not use "all of these", "none of these", or options that refer to other options.
+  For each wrong option, why: one sentence starting "This is what you get if you" that names the mistake leading to it; and trap: that mistake as a short name of at most 6 plain words (for example "Thinks pressure is the same at every depth"). Use the same trap name whenever the same mistake applies. For the right option, why and trap are empty strings.
 - explain: one or two sentences showing why the right option is right.
 
 Check every fact and every piece of arithmetic. Maths in plain text (x^2, 3/4, 10^5).`,
@@ -601,7 +625,7 @@ Check every fact and every piece of arithmetic. Maths in plain text (x^2, 3/4, 1
     const drafted: TestQuestion[] = [];
     for (const q of out.questions) {
       const s = usable.find((u) => u.topic.topic.trim().toLowerCase() === q.concept.trim().toLowerCase());
-      const options = q.options.map((o) => ({ text: o.text.trim(), right: o.right })).filter((o) => o.text);
+      const options = q.options.map((o) => ({ text: o.text.trim(), right: o.right, ...(o.right ? {} : { why: o.why.trim(), trap: o.trap.trim() }) })).filter((o) => o.text);
       if (!s || !q.text.trim() || options.length !== 4 || options.filter((o) => o.right).length !== 1) continue;
       const copies = (other: string) => overlap(q.text, other) >= 0.7;
       if (s.texts.some(copies) || taken.some(copies) || drafted.some((d) => copies(d.text))) continue;
@@ -647,7 +671,8 @@ export type TestAct =
   | { type: "answer"; index: number; choice: number }
   | { type: "submit" }
   | { type: "flag"; index: number }
-  | { type: "exclude"; excluded: boolean };
+  | { type: "exclude"; excluded: boolean }
+  | { type: "time"; index: number; ms: number };
 
 export async function actSelfTest(id: string, a: TestAct): Promise<SelfTest> {
   return await update(id, (t) => {
@@ -657,6 +682,14 @@ export async function actSelfTest(id: string, a: TestAct): Promise<SelfTest> {
       return;
     }
     if (t.status !== "ready") return;
+    if (a.type === "time") {
+      // Time is added only while the set is open, and capped per question so a phone left on the table does not count.
+      if (t.submittedAt || !t.questions[a.index] || !(a.ms > 0)) return;
+      t.times ??= {};
+      const k = String(a.index);
+      t.times[k] = Math.min(MAX_QUESTION_MS, (t.times[k] ?? 0) + Math.min(a.ms, MAX_QUESTION_MS));
+      return;
+    }
     if (a.type === "answer") {
       if (!t.submittedAt && t.questions[a.index]?.options[a.choice]) t.answers[String(a.index)] = a.choice;
     } else if (a.type === "submit") {
@@ -706,9 +739,33 @@ export type SelfTestView = {
     explain: string | null;
     flagged: boolean;
     lesson: string | null;
+    ms: number | null; // time on this question, once handed in (null if not timed)
+    why: string | null; // for a wrong pick: what mistake usually leads to that option
   }[];
+  // Once handed in, and only if the set was timed.
+  timing: {
+    totalMs: number;
+    paceMs: number; // PACE_MS for each question
+    usualMs: number; // his usual time per question, across every timed set so far
+    split: { quickRight: number; slowRight: number; quickWrong: number; slowWrong: number };
+  } | null;
   result: { right: number; counted: number; next: { name: string; href: string } | null } | null;
 };
+
+// His usual time per question: the middle value of every timed question he has handed in. Falls back to the pace.
+async function usualTime(): Promise<number> {
+  const all: number[] = [];
+  for (const t of await listSelfTests()) {
+    if (!t.submittedAt || t.excluded || !t.times) continue;
+    t.questions.forEach((_, i) => {
+      const ms = t.times?.[String(i)];
+      if (ms && !t.flagged.includes(i)) all.push(ms);
+    });
+  }
+  if (all.length < 3) return PACE_MS;
+  all.sort((a, b) => a - b);
+  return all[Math.floor(all.length / 2)];
+}
 
 export async function selfTestView(t: SelfTest): Promise<SelfTestView> {
   const done = Boolean(t.submittedAt);
@@ -724,9 +781,29 @@ export async function selfTestView(t: SelfTest): Promise<SelfTestView> {
       concept: done ? q.concept : null,
       explain: done ? q.explain : null,
       flagged: t.flagged.includes(i),
+      ms: done && t.times?.[String(i)] ? t.times[String(i)] : null,
+      why: done && chosen !== undefined && !q.options[chosen]?.right ? q.options[chosen]?.why ?? null : null,
       lesson: done && !q.keep && !q.topic ? lessons.get(q.concept.trim().toLowerCase()) ?? null : null,
     };
   });
+  let timing: SelfTestView["timing"] = null;
+  if (done && t.times && Object.keys(t.times).length > 0) {
+    const usualMs = await usualTime();
+    const split = { quickRight: 0, slowRight: 0, quickWrong: 0, slowWrong: 0 };
+    let totalMs = 0;
+    t.questions.forEach((q, i) => {
+      const ms = t.times?.[String(i)];
+      if (!ms || t.flagged.includes(i)) return;
+      totalMs += ms;
+      const right = Boolean(q.options[t.answers[String(i)]]?.right);
+      const quick = ms <= usualMs;
+      if (right && quick) split.quickRight++;
+      else if (right) split.slowRight++;
+      else if (quick) split.quickWrong++;
+      else split.slowWrong++;
+    });
+    timing = { totalMs, paceMs: PACE_MS * t.questions.length, usualMs, split };
+  }
   let result: SelfTestView["result"] = null;
   if (done) {
     const missed = t.questions.find((q, i) => !q.keep && !q.topic && !t.flagged.includes(i) && !q.options[t.answers[String(i)]]?.right);
@@ -747,5 +824,6 @@ export async function selfTestView(t: SelfTest): Promise<SelfTestView> {
     costUsd: t.cost.usd,
     questions: t.status === "ready" ? questions : [],
     result,
+    timing,
   };
 }

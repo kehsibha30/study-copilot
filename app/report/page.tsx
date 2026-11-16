@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { day } from "@/lib/format";
+import { clock, day } from "@/lib/format";
 import { story, type Reader, type Weak } from "@/lib/story";
 import type { ConceptRow, TopicRow, WorkOn } from "@/lib/workon";
 
@@ -52,17 +52,29 @@ export default function ReportPage() {
   if (error) return <div className="error" role="alert">{error}</div>;
   if (!r) return <p className="muted">Putting the report together…</p>;
 
+  // Before any work: the real layout, each section saying in one line what will appear (decision 16 Nov 2026).
   if (r.papers === 0 && r.setsDone === 0) {
+    const parts: [string, string][] = [
+      ["Strengths", "Chapters answered right again and again. Needs a few answers per chapter."],
+      ["Weak spots", "The ideas behind wrong answers, and whether each one is fixed yet."],
+      ["Speed", "Where time goes: slow chapters, and chapters answered too fast. Every practice question is timed."],
+      ["Traps that keep coming back", "The kind of wrong option picked again and again."],
+      ["Next 2 weeks", "A short plan of lessons, practice and checks, with dates. Redone each time this page opens."],
+    ];
     return (
-      <div className="stack" style={{ gap: 18 }}>
-        <div>
-          <h1>Report</h1>
-          <p className="lede">Nothing to report yet. It starts with the first paper or practice set, and builds up with each one.</p>
-        </div>
-        <div className="row">
-          <Link href="/" className="btn">Upload a paper</Link>
-          <Link href="/self-test" className="btn ghost">Practise a chapter</Link>
-        </div>
+      <div className="stack" style={{ gap: 22 }}>
+        <h1>Report</h1>
+        <section className="card stack" style={{ gap: 12 }}>
+          <p className="story">This page fills in as the work comes in. One practice set of 10 questions is enough to start it.</p>
+          <Link href="/self-test" className="btn wide">Practise a chapter</Link>
+          <Link href="/" className="muted tiny" style={{ textAlign: "center" }}>or upload a test paper</Link>
+        </section>
+        {parts.map(([h, line]) => (
+          <section key={h} className="stack" style={{ gap: 4 }}>
+            <h2 className="muted">{h}</h2>
+            <p className="muted tiny" style={{ margin: 0 }}>{line}</p>
+          </section>
+        ))}
       </div>
     );
   }
@@ -123,6 +135,41 @@ export default function ReportPage() {
           ))
         )}
       </section>
+
+      {st.speed && (
+        <section className="stack" style={{ gap: 10 }}>
+          <h2>Speed</h2>
+          <p className="muted tiny" style={{ margin: 0 }}>
+            From {st.speed.timed} timed questions. {you ? "Your" : "His"} usual time: {clock(st.speed.usualMs)} a question (NEET pace is about 1:00).
+          </p>
+          <div className="card" style={{ padding: "4px 16px" }}>
+            {st.speed.rows.map((x) => (
+              <div key={`${x.subject}|${x.topic}`} className="speedrow">
+                <span>{x.topic}</span>
+                <span className="num">{clock(x.avgMs)}</span>
+                <span className={x.label === "Slow" ? "pill warn" : x.label === "Rushed" ? "pill bad" : "pill"}>{x.label}</span>
+              </div>
+            ))}
+          </div>
+          {st.speed.lines.map((l) => <p key={l} style={{ margin: 0 }}>{l}</p>)}
+        </section>
+      )}
+
+      {st.traps.length > 0 && (
+        <section className="stack" style={{ gap: 10 }}>
+          <h2>Traps that keep coming back</h2>
+          {st.traps.map((t) => (
+            <div key={`${t.subject}|${t.topic}|${t.trap}`} className="card weak">
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", flexWrap: "nowrap" }}>
+                <span style={{ fontWeight: 500 }}>{t.trap}</span>
+                <span className="pill bad">{t.count} times</span>
+              </div>
+              <span className="muted tiny">{t.subject} · {t.topic}</span>
+            </div>
+          ))}
+          <p className="muted tiny" style={{ margin: 0 }}>Counted when {you ? "you pick" : "he picks"} an option whose usual mistake is the same. It shows what the option usually means, not what {you ? "you were" : "he was"} thinking.</p>
+        </section>
+      )}
 
       <section className="stack" style={{ gap: 6 }}>
         <h2>Next 2 weeks</h2>

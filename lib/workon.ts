@@ -80,6 +80,12 @@ export type WorkOn = {
   // Chapter practice (mixed and chapter sets), handed in and not flagged. Newest first.
   practice: { subject: string; topic: string; right: number; total: number; last: string }[];
   setsDone: number; // practice sets and checks handed in
+  // From timed practice. usualMs: the middle of all his timed answers (null with fewer than 3).
+  usualMs: number | null;
+  timedCount: number;
+  speed: { subject: string; topic: string; avgMs: number; n: number; wrong: number; totalMs: number }[];
+  // Wrong options he picked, by the mistake they usually come from, per chapter. Most frequent first.
+  traps: { subject: string; topic: string; trap: string; count: number }[];
 };
 
 const NOT_SORTED = "Not sorted yet";
@@ -186,6 +192,10 @@ export async function workOn(now = Date.now()): Promise<WorkOn> {
   const keepLast = new Map<string, { at: string; right: boolean }>();
   // Mixed and chapter sets: right and wrong per chapter, so practice shows in the report even with no paper behind it.
   const practice = new Map<string, WorkOn["practice"][number]>();
+  // Timing and traps from practice: per chapter, and his usual time per question across all timed answers.
+  const timed: number[] = [];
+  const speed = new Map<string, WorkOn["speed"][number]>();
+  const traps = new Map<string, WorkOn["traps"][number]>();
   let setsDone = 0;
   for (const t of sets) {
     activity.push(t.createdAt);
@@ -196,6 +206,28 @@ export async function workOn(now = Date.now()): Promise<WorkOn> {
     t.questions.forEach((q, i) => {
       if (t.flagged.includes(i)) return;
       const right = Boolean(q.options[t.answers[String(i)]]?.right);
+      const idea = concepts.get(q.concept.trim().toLowerCase());
+      const chapter = q.topic ?? q.keep ?? (idea ? { subject: idea.subject, topic: idea.topic } : null);
+      const ms = t.times?.[String(i)];
+      if (ms) timed.push(ms);
+      if (chapter) {
+        const ck = `${chapter.subject}|${chapter.topic}`;
+        if (ms) {
+          const sp = speed.get(ck) ?? { subject: chapter.subject, topic: chapter.topic, avgMs: 0, n: 0, wrong: 0, totalMs: 0 };
+          sp.n++;
+          sp.totalMs += ms;
+          sp.avgMs = Math.round(sp.totalMs / sp.n);
+          if (!right) sp.wrong++;
+          speed.set(ck, sp);
+        }
+        const picked = q.options[t.answers[String(i)]];
+        if (picked && !picked.right && picked.trap) {
+          const tk = `${ck}|${picked.trap.toLowerCase()}`;
+          const tr = traps.get(tk) ?? { subject: chapter.subject, topic: chapter.topic, trap: picked.trap, count: 0 };
+          tr.count++;
+          traps.set(tk, tr);
+        }
+      }
       if (q.topic) {
         const k = `${q.topic.subject}|${q.topic.topic}`;
         const p = practice.get(k) ?? { subject: q.topic.subject, topic: q.topic.topic, right: 0, total: 0, last: t.submittedAt! };
@@ -356,6 +388,10 @@ export async function workOn(now = Date.now()): Promise<WorkOn> {
     answersGiven,
     firstAt: papers[0]?.createdAt ?? null,
     setsDone,
+    usualMs: timed.length >= 3 ? [...timed].sort((a, b) => a - b)[Math.floor(timed.length / 2)] : null,
+    timedCount: timed.length,
+    speed: [...speed.values()].sort((a, b) => b.avgMs - a.avgMs),
+    traps: [...traps.values()].sort((a, b) => b.count - a.count),
     practice: [...practice.values()].sort((a, b) => b.last.localeCompare(a.last)),
   };
 }

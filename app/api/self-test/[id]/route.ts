@@ -32,6 +32,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/self-test/[
   else if (body.type === "submit") move = { type: "submit" };
   else if (body.type === "flag" && typeof body.index === "number") move = { type: "flag", index: body.index };
   else if (body.type === "exclude") move = { type: "exclude", excluded: body.excluded !== false };
+  else if (body.type === "time" && typeof body.index === "number" && typeof body.ms === "number") move = { type: "time", index: body.index, ms: body.ms };
   if (!move) return Response.json({ error: "We could not read that. Try again." }, { status: 400 });
   return Response.json({ test: await selfTestView(await actSelfTest(id, move)) });
 }

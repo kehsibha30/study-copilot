@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { clock } from "@/lib/format";
 import type { SelfTestView } from "@/lib/selftest";
 
 export default function SelfTestScreen() {
@@ -50,9 +51,63 @@ export default function SelfTestScreen() {
     }
   }
 
+  // ---------- quiet timing: active time on the question on screen, paused while the app is not in front ----------
+  const [at, setAt] = useState(0);
+  const atRef = useRef(0);
+  const since = useRef<number | null>(null);
+  const answering = test?.status === "ready" && !test.submitted;
+
+  const startClock = useCallback(() => {
+    since.current = document.visibilityState === "visible" ? performance.now() : null;
+  }, []);
+  const stopClock = useCallback(async () => {
+    if (since.current === null) return;
+    const ms = Math.round(performance.now() - since.current);
+    since.current = null;
+    if (ms < 300) return;
+    try {
+      // keepalive: still sent if the page is closing.
+      await fetch(base, { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "time", index: atRef.current, ms }) });
+    } catch {
+      // A lost time slice is not worth an error on the child's screen.
+    }
+  }, [base]);
+
+  // Start on the first unanswered question (a refresh or a return carries on where he was), and keep the clock honest.
+  const started = useRef(false);
+  useEffect(() => {
+    if (!answering || started.current || !test) return;
+    started.current = true;
+    const first = Math.max(0, test.questions.findIndex((q) => q.chosen === null));
+    atRef.current = first;
+    setAt(first);
+    startClock();
+  }, [answering, test, startClock]);
+  useEffect(() => {
+    if (!answering) return;
+    const onVis = () => (document.visibilityState === "visible" ? startClock() : void stopClock());
+    const onHide = () => void stopClock();
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onHide);
+    };
+  }, [answering, startClock, stopClock]);
+
+  function go(next: number) {
+    void stopClock();
+    atRef.current = next;
+    setAt(next);
+    startClock();
+    window.scrollTo({ top: 0 });
+  }
+
   async function handIn() {
     if (busy) return;
     setBusy(true);
+    // The last question's time is saved before the set is closed; after hand-in no time is taken.
+    await stopClock();
     await move({ type: "submit" });
     setBusy(false);
     window.scrollTo({ top: 0 });
@@ -100,11 +155,70 @@ export default function SelfTestScreen() {
   const unanswered = test.questions.filter((q) => q.chosen === null).length;
   const r = test.result;
 
+  // Answering: one question at a time, timed quietly (no clock on screen; decision 16 Nov 2026, option A).
+  if (!test.submitted) {
+    const q = test.questions[at] ?? test.questions[0];
+    const i = test.questions[at] ? at : 0;
+    const last = i === test.questions.length - 1;
+    return (
+      <div className="stack" style={{ gap: 18 }}>
+        <div className="stack" style={{ gap: 8 }}>
+          <p className="muted tiny" style={{ margin: 0 }}>{test.recheck ? "Check again" : about}</p>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted tiny">Question {i + 1} of {test.questions.length}</span>
+            {!test.recheck && <span className="pill">{q.level}</span>}
+          </div>
+          <div className="bar-track" role="progressbar" aria-valuenow={i + 1} aria-valuemin={1} aria-valuemax={test.questions.length} aria-label={`Question ${i + 1} of ${test.questions.length}`}>
+            <div style={{ width: `${((i + 1) / test.questions.length) * 100}%` }} />
+          </div>
+        </div>
+        <p className="yourq" style={{ margin: 0, fontSize: 21 }}>{q.text}</p>
+        <div role="radiogroup" aria-label="Options">
+          {q.options.map((o, j) => {
+            const mine = q.chosen === j;
+            return (
+              <button
+                key={j}
+                type="button"
+                role="radio"
+                aria-checked={mine}
+                className={`pick${mine ? " sel" : ""}`}
+                onClick={() => {
+                  // Shown at once; saved in the background so a refresh keeps it.
+                  setTest({ ...test, questions: test.questions.map((x, k) => (k === i ? { ...x, chosen: j } : x)) });
+                  move({ type: "answer", index: i, choice: j });
+                }}
+              >
+                {o.text}
+              </button>
+            );
+          })}
+        </div>
+        {error && <div className="error" role="alert">{error}</div>}
+        <div className="row" style={{ flexWrap: "nowrap" }}>
+          {i > 0 && <button type="button" className="btn ghost" onClick={() => go(i - 1)}>Back</button>}
+          {last ? (
+            <button type="button" className="btn" style={{ flexGrow: 1 }} onClick={handIn} aria-busy={busy} disabled={busy}>
+              {busy ? "Checking…" : "Check my answers"}
+            </button>
+          ) : (
+            <button type="button" className="btn" style={{ flexGrow: 1 }} onClick={() => go(i + 1)}>Next</button>
+          )}
+        </div>
+        {last && unanswered > 0 && <p className="muted tiny" style={{ margin: 0 }}>{unanswered} not answered yet. They will count as wrong.</p>}
+        <p className="muted tiny" style={{ margin: 0, textAlign: "center" }}>No clock. Take the time you need; you will see your time when you hand in.</p>
+      </div>
+    );
+  }
+
+  const tm = test.timing;
+  const longest = Math.max(1, ...test.questions.map((x) => x.ms ?? 0));
+
   return (
     <div className="stack" style={{ gap: 18 }}>
       <div>
         <p className="muted tiny">{about}</p>
-        {r ? (
+        {r && (
           <>
             <h1>You got {r.right} of {r.counted} right.</h1>
             <div className="row" style={{ marginTop: 16 }}>
@@ -123,71 +237,91 @@ export default function SelfTestScreen() {
               )}
             </div>
           </>
-        ) : (
-          <>
-            <h1>{test.recheck ? "Check again" : "Practice"}</h1>
-            <p className="lede">
-              {test.recheck
-                ? `${test.questions.length === 1 ? "1 new question" : `${test.questions.length} new questions`} on things you practised a few days ago. No hints.`
-                : `${test.questions.length} new questions. Tap your answer for each one; you can change it until you check.`}
-            </p>
-          </>
         )}
       </div>
 
+      {tm && (
+        <>
+          <div className="stats">
+            <div className="stat"><div className="l">Right</div><div className="n">{r ? `${r.right} of ${r.counted}` : "–"}</div></div>
+            <div className="stat"><div className="l">Time</div><div className="n">{clock(tm.totalMs)}</div><div className="muted tiny">Pace for {test.questions.length}: about {clock(tm.paceMs)}</div></div>
+          </div>
+          <section className="card stack" style={{ gap: 10 }}>
+            <h2 style={{ fontSize: 17, fontFamily: "inherit", fontWeight: 600 }}>How the time went</h2>
+            <div className="split">
+              <div className="good"><b>{tm.split.quickRight}</b> quick and right</div>
+              <div className="warn"><b>{tm.split.slowRight}</b> right, but slow</div>
+              <div className="bad"><b>{tm.split.quickWrong}</b> wrong, and quick</div>
+              <div className="plain"><b>{tm.split.slowWrong}</b> wrong after a long time</div>
+            </div>
+            <p className="muted tiny" style={{ margin: 0 }}>
+              Quick means at or under your usual {clock(tm.usualMs)} a question. A wrong answer given quickly is often a trap, not a gap: slow down on those.
+            </p>
+          </section>
+          <section>
+            <h2 style={{ marginBottom: 8 }}>Each question</h2>
+            {test.questions.map((x, k) => {
+              const right = x.chosen !== null && x.options[x.chosen]?.right === true;
+              const slow = (x.ms ?? 0) > tm.usualMs;
+              const label = x.flagged ? "Left out" : right ? (slow ? "Right, slow" : "Right") : x.chosen === null ? "Not answered" : slow ? "Wrong" : "Wrong, quick";
+              const tone = x.flagged ? "plain" : right ? (slow ? "warn" : "good") : "bad";
+              return (
+                <a key={k} href={`#q${k + 1}`} className="qtime">
+                  <span>{k + 1}</span>
+                  <span className="qbar"><span className={tone} style={{ width: `${Math.max(4, ((x.ms ?? 0) / longest) * 100)}%` }} /><span className={`t ${tone}`}>{label}</span></span>
+                  <span className="num">{x.ms ? clock(x.ms) : "–"}</span>
+                </a>
+              );
+            })}
+          </section>
+        </>
+      )}
+
       {test.questions.map((q, i) => (
-        <div className="card" key={i}>
-          <div className="stepno">Question {i + 1}{test.recheck ? "" : ` · ${q.level}`}</div>
+        <div className="card" key={i} id={`q${i + 1}`}>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <div className="stepno">Question {i + 1}{test.recheck ? "" : ` · ${q.level}`}</div>
+            {q.ms && <span className="muted tiny num">{clock(q.ms)}</span>}
+          </div>
           <p className="yourq" style={{ margin: "6px 0 10px" }}>{q.text}</p>
           {q.options.map((o, j) => {
             const mine = q.chosen === j;
-            const cls = test.submitted ? (o.right ? " good" : mine ? " bad" : " off") : mine ? " sel" : "";
+            const cls = o.right ? " good" : mine ? " bad" : " off";
             return (
-              <button
-                key={j}
-                type="button"
-                className={`pick${cls}`}
-                aria-pressed={mine}
-                onClick={() => {
-                  if (test.submitted) return;
-                  // Shown at once; saved in the background so a refresh keeps it.
-                  setTest({ ...test, questions: test.questions.map((x, k) => (k === i ? { ...x, chosen: j } : x)) });
-                  move({ type: "answer", index: i, choice: j });
-                }}
-              >
+              <div key={j} className={`pick${cls}`}>
                 {o.text}
-                {test.submitted && mine && <span className="tag" style={{ float: "right", fontSize: 13 }}>You chose this</span>}
-              </button>
+                {mine && <span className="tag" style={{ float: "right", fontSize: 13 }}>You chose this</span>}
+              </div>
             );
           })}
-          {test.submitted && (
-            <>
-              {q.chosen === null && <p className="say" style={{ paddingLeft: 0, marginTop: 10 }}>Not answered.</p>}
-              {q.explain && <p className="say" style={{ paddingLeft: 0, marginTop: 10 }}>{q.explain}</p>}
-              <p className="muted tiny" style={{ marginTop: 10 }}>
-                {q.concept && (q.lesson ? <Link href={q.lesson}>{q.concept}</Link> : q.concept)}
-                {" · "}
-                {q.flagged ? (
-                  <>
-                    Left out of your marks. <button className="linkbtn" onClick={() => move({ type: "flag", index: i })}>Count it again</button>
-                  </>
-                ) : (
-                  <button className="linkbtn" onClick={() => move({ type: "flag", index: i })}>This looks wrong</button>
-                )}
-              </p>
-            </>
+          {q.chosen === null && <p className="say" style={{ paddingLeft: 0, marginTop: 10 }}>Not answered.</p>}
+          {q.why && (
+            <div style={{ marginTop: 10 }}>
+              <div className="tiny" style={{ fontWeight: 600 }}>Why that option tempts</div>
+              <p className="say" style={{ paddingLeft: 0, margin: "2px 0 0" }}>{q.why}</p>
+            </div>
           )}
+          {q.explain && (
+            <div style={{ marginTop: 10 }}>
+              {q.why && <div className="tiny" style={{ fontWeight: 600 }}>Why the right answer is right</div>}
+              <p className="say" style={{ paddingLeft: 0, margin: "2px 0 0" }}>{q.explain}</p>
+            </div>
+          )}
+          <p className="muted tiny" style={{ marginTop: 10 }}>
+            {q.concept && (q.lesson ? <Link href={q.lesson}>{q.concept}</Link> : q.concept)}
+            {" · "}
+            {q.flagged ? (
+              <>
+                Left out of your marks. <button className="linkbtn" onClick={() => move({ type: "flag", index: i })}>Count it again</button>
+              </>
+            ) : (
+              <button className="linkbtn" onClick={() => move({ type: "flag", index: i })}>This looks wrong</button>
+            )}
+          </p>
         </div>
       ))}
 
       {error && <div className="error" role="alert">{error}</div>}
-
-      {!test.submitted && (
-        <div className="row">
-          <button className="btn" onClick={handIn} aria-busy={busy}>Check my answers</button>
-          {unanswered > 0 && <span className="muted tiny">{unanswered} not answered yet. They will count as wrong.</span>}
-        </div>
-      )}
 
       {test.submitted && (
         <div>

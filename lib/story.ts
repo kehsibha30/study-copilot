@@ -9,6 +9,9 @@ export type Strength = { subject: string; topic: string; line: string };
 export type Weak = { name: string; subject: string; topic: string; line: string; status: "to_fix" | "check_due" | "check_later" | "practice"; href: string | null };
 export type PlanItem = { on: string | null; when: string; label: string; text: string; href: string | null };
 
+export type SpeedRow = { subject: string; topic: string; avgMs: number; n: number; label: "Slow" | "Rushed" | "Steady" };
+export type TrapRow = { subject: string; topic: string; trap: string; count: number };
+
 export type Story = {
   scope: string;
   early: boolean;
@@ -16,6 +19,8 @@ export type Story = {
   strengths: Strength[];
   weak: Weak[];
   plan: PlanItem[];
+  speed: { usualMs: number; timed: number; rows: SpeedRow[]; lines: string[] } | null;
+  traps: TrapRow[];
 };
 
 const SCIENCE = ["Physics", "Chemistry", "Biology"];
@@ -103,6 +108,11 @@ export function story(r: WorkOn, reader: Reader, sets: number, now = Date.now())
     const on = c.due || !c.checkOn ? addDays(now, 0) : c.checkOn;
     if (Date.parse(on) <= Date.parse(addDays(now, 14))) plan.push({ when: "", on, label: "Check", text: lower(c.name), href: c.due ? "/self-test" : null });
   }
+  // Chapters missed in practice get another set, after the lessons.
+  const missed = weak.filter((w) => w.status === "practice");
+  for (const w of missed.slice(0, 2)) {
+    plan.push({ when: "", on: addDays(now, d++), label: "Practice", text: `${w.topic} again`, href: w.href });
+  }
   const untried = SCIENCE.filter((s) => !r.subjects.some((x) => x.name === s && x.counted > 0) && !r.practice.some((p) => p.subject === s));
   if (untried.length > 0) {
     plan.push({ when: "", on: addDays(now, Math.max(d, 3)), label: "Practice", text: `a ${untried[0]} chapter (no ${list(untried)} answers yet, and ${untried.length === 1 ? "it counts" : "they count"} for NEET)`, href: "/self-test" });
@@ -121,8 +131,27 @@ export function story(r: WorkOn, reader: Reader, sets: number, now = Date.now())
   else if (open.length === 2) parts.push(`2 ideas still slip: ${list(open.map((c) => lower(c.name)))}.`);
   else if (open.length > 2) parts.push(`${open.length} ideas still slip, including ${list(open.slice(0, 2).map((c) => lower(c.name)))}.`);
   else if (counted > 0) parts.push("No idea is waiting to be fixed.");
+  if (missed.length) parts.push(`${list(missed.slice(0, 2).map((w) => w.topic))} ${missed.length === 1 ? "needs" : "need"} more practice (${missed.slice(0, 2).map((w) => w.line.replace(" in chapter practice.", "")).join("; ")}).`);
   if (waiting.length) parts.push(`${waiting.length === 1 ? "One is" : `${waiting.length} are`} fixed and waiting for a check.`);
   if (parts.length === 0) parts.push(you ? "Nothing to go on yet. Upload a test paper or practise a chapter." : "Nothing to go on yet.");
+
+  // Speed: chapters with at least 3 timed answers, against his own usual time. Slow: well over it. Rushed: well under
+  // it with half or more wrong (a quick wrong answer is usually a trap, not a gap).
+  let speed: Story["speed"] = null;
+  if (r.usualMs && r.timedCount >= 5) {
+    const usual = r.usualMs;
+    const rows: SpeedRow[] = r.speed
+      .filter((x) => x.n >= 3)
+      .map((x) => ({ subject: x.subject, topic: x.topic, avgMs: x.avgMs, n: x.n, label: x.avgMs > usual * 1.5 ? "Slow" : x.avgMs < usual * 0.75 && x.wrong / x.n >= 0.5 ? "Rushed" : "Steady" }));
+    const lines: string[] = [];
+    const slow = rows.find((x) => x.label === "Slow");
+    if (slow) lines.push(`${slow.topic} takes ${you ? "you" : "him"} about ${(slow.avgMs / usual).toFixed(1)} times ${you ? "your" : "his"} usual time a question.`);
+    const rushed = r.speed.find((x) => x.n >= 3 && x.avgMs < usual * 0.75 && x.wrong / x.n >= 0.5);
+    if (rushed) lines.push(`${rushed.topic} is answered fast, but ${rushed.wrong} of ${rushed.n} were wrong: ${you ? "slow down and read the whole question" : "he may be deciding before reading the whole question"}.`);
+    if (rows.length) speed = { usualMs: usual, timed: r.timedCount, rows, lines };
+  }
+  // Traps: a mistake that led him to a wrong option at least twice.
+  const traps: TrapRow[] = r.traps.filter((x) => x.count >= 2).slice(0, 5);
 
   const span = r.firstAt ? `${new Date(r.firstAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} to today` : "";
   const what = [r.papers ? `${r.papers} ${r.papers === 1 ? "paper" : "papers"}` : "", sets ? `${sets} practice ${sets === 1 ? "set" : "sets"}` : ""].filter(Boolean).join(" and ");
@@ -133,5 +162,7 @@ export function story(r: WorkOn, reader: Reader, sets: number, now = Date.now())
     strengths,
     weak,
     plan,
+    speed,
+    traps,
   };
 }
