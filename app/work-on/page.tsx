@@ -1,5 +1,6 @@
 "use client";
 
+import CalcSection from "@/components/CalcSection";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -67,6 +68,7 @@ export default function WorkOnPage() {
             ))}
           </div>
         )}
+        <CalcSection calc={report.calc} />
         <div className="row">
           <Link href={weak[0] ? `/self-test?topic=${encodeURIComponent(`${weak[0].subject}|${weak[0].topic}`)}` : "/self-test"} className="btn">
             {weak[0] ? `Practise ${weak[0].topic} again` : "Practise a chapter"}
@@ -193,6 +195,8 @@ export default function WorkOnPage() {
           </div>
         </details>
       ))}
+
+      <CalcSection calc={report.calc} />
 
       {report.leftOut > 0 && (
         <p className="muted tiny">

@@ -161,7 +161,7 @@ export function story(r: WorkOn, reader: Reader, sets: number, now = Date.now())
   const traps: TrapRow[] = r.traps.filter((x) => x.count >= 2).slice(0, 5);
 
   const span = r.firstAt ? `${new Date(r.firstAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} to today` : "";
-  const what = [r.papers ? `${r.papers} ${r.papers === 1 ? "paper" : "papers"}` : "", sets ? `${sets} practice ${sets === 1 ? "set" : "sets"}` : ""].filter(Boolean).join(" and ");
+  const what = [r.papers ? `${r.papers} ${r.papers === 1 ? "paper" : "papers"}` : "", sets ? `${sets} practice ${sets === 1 ? "set" : "sets"}` : "", r.calc.runs ? `${r.calc.runs} speed ${r.calc.runs === 1 ? "drill" : "drills"}` : ""].filter(Boolean).join(" and ");
   return {
     scope: what ? `Based on ${what}${span ? `, ${span}` : ""}.` : "Nothing done yet.",
     early: r.papers < 3,
