@@ -8,7 +8,15 @@ export async function POST(request: Request) {
     return Response.json({ error: "Something went wrong. Try again." }, { status: 400 });
   }
   const given = typeof body.password === "string" ? body.password : "";
-  if (!given || !(await passwordMatches(given))) {
+  let ok = false;
+  try {
+    ok = Boolean(given) && (await passwordMatches(given));
+  } catch (error) {
+    // The family password is missing from the host's settings. Say so plainly instead of a vague failure.
+    console.error("[login] cannot check the password", error);
+    return Response.json({ error: "The app is not set up yet: its password setting is missing. Ask a parent to finish the setup." }, { status: 503 });
+  }
+  if (!ok) {
     // A pause on every wrong try makes guessing slow.
     await new Promise((r) => setTimeout(r, 1200));
     return Response.json({ error: "That password is not right. Check it and try again." }, { status: 401 });
