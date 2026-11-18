@@ -2,7 +2,7 @@
 
 import CalcSection from "@/components/CalcSection";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useGo } from "@/components/useGo";
 import { useEffect, useState } from "react";
 import { day } from "@/lib/format";
 import type { ConceptRow, WorkOn } from "@/lib/workon";
@@ -12,18 +12,19 @@ export default function WorkOnPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
-  const router = useRouter();
+  const { go, navigating } = useGo();
 
   // Starts the check questions. A second tap gets the same set back, so nothing is written twice.
   async function startCheck() {
-    if (busy) return;
+    if (busy || navigating) return;
     setBusy(true);
     setCheckError(null);
     try {
       const res = await fetch("/api/self-test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recheck: true }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      router.push(`/self-test/${data.id}`);
+      go(`/self-test/${data.id}`);
+      setBusy(false);
     } catch (e) {
       setCheckError(e instanceof Error && e.message ? e.message : "That did not go through. Try again.");
       setBusy(false);
@@ -105,7 +106,7 @@ export default function WorkOnPage() {
           {report.recheckWaiting ? (
             <Link href={`/self-test/${report.recheckWaiting}`} className="btn">Carry on: your check questions</Link>
           ) : checks > 0 ? (
-            <button className="btn" onClick={startCheck} aria-busy={busy}>{busy ? "Starting…" : `Check again: ${checkLine}`}</button>
+            <button className="btn" onClick={startCheck} aria-busy={busy || navigating} disabled={navigating}>{busy || navigating ? "Starting…" : `Check again: ${checkLine}`}</button>
           ) : null}
           {report.next ? (
             <>

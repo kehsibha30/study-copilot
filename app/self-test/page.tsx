@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useGo } from "@/components/useGo";
 import { useEffect, useState } from "react";
 import { day, when } from "@/lib/format";
 
@@ -31,7 +31,7 @@ function Chevron() {
 }
 
 export default function Practice() {
-  const router = useRouter();
+  const { go, navigating } = useGo();
   const [data, setData] = useState<Data | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,14 +63,15 @@ export default function Practice() {
   }, []);
 
   async function start(kind: string, body: Record<string, unknown>) {
-    if (busy) return;
+    if (busy || navigating) return;
     setBusy(kind);
     setError(null);
     try {
       const res = await fetch("/api/self-test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const out = await res.json();
       if (!res.ok) throw new Error(out.error);
-      router.push(`/self-test/${out.id}`);
+      go(`/self-test/${out.id}`);
+      setBusy(null);
     } catch (e) {
       setError(e instanceof Error && e.message ? e.message : "That did not go through. Try again.");
       setBusy(null);
@@ -108,7 +109,7 @@ export default function Practice() {
             ))}
           </ul>
           <p className="muted tiny" style={{ margin: 0 }}>About 10 minutes. Easy first, then harder. No hints.</p>
-          <button className="btn wide" onClick={() => start("suggest", { mode: "mistakes", topics: data.suggestion!.topics })} aria-busy={busy === "suggest"} disabled={Boolean(busy)}>
+          <button className="btn wide" onClick={() => start("suggest", { mode: "mistakes", topics: data.suggestion!.topics })} aria-busy={busy === "suggest"} disabled={Boolean(busy) || navigating}>
             {busy === "suggest" ? "Starting…" : "Start"}
           </button>
         </section>
@@ -117,7 +118,7 @@ export default function Practice() {
           <span className="tiny" style={{ fontWeight: 600, color: "var(--good-ink)" }}>Suggested for today</span>
           <h2 style={{ fontSize: 22 }}>10 mixed questions, like {data.mix.title}</h2>
           <p className="muted tiny" style={{ margin: 0 }}>Nothing is waiting to be fixed, so this keeps every chapter of your last paper fresh.</p>
-          <button className="btn wide" onClick={() => start("mix", { mode: "mixed" })} aria-busy={busy === "mix"} disabled={Boolean(busy)}>
+          <button className="btn wide" onClick={() => start("mix", { mode: "mixed" })} aria-busy={busy === "mix"} disabled={Boolean(busy) || navigating}>
             {busy === "mix" ? "Starting…" : "Start"}
           </button>
         </section>
@@ -132,7 +133,7 @@ export default function Practice() {
         <h2 className="tiny muted" style={{ fontFamily: "inherit", fontWeight: 600, marginBottom: 6 }}>{waiting || data.suggestion || data.mix ? "Or choose something else" : "Choose a chapter"}</h2>
         <div className="choices">
           {data.mix && (data.suggestion || waiting) && (
-            <button type="button" onClick={() => start("mix", { mode: "mixed" })} disabled={Boolean(busy)} aria-busy={busy === "mix"}>
+            <button type="button" onClick={() => start("mix", { mode: "mixed" })} disabled={Boolean(busy) || navigating} aria-busy={busy === "mix"}>
               <span><span className="t">{busy === "mix" ? "Starting…" : "Mixed, like my last paper"}</span><span className="muted tiny">All {data.mix.chapters} chapters of {data.mix.title}</span></span>
               <Chevron />
             </button>
@@ -173,7 +174,7 @@ export default function Practice() {
               </div>
               <button
                 className="btn wide"
-                disabled={!chapter || Boolean(busy)}
+                disabled={!chapter || Boolean(busy) || navigating}
                 aria-busy={busy === "chapter"}
                 onClick={() => start("chapter", { mode: "chapter", subject, topic: chapter })}
               >
@@ -188,7 +189,7 @@ export default function Practice() {
               <Chevron />
             </Link>
           ) : data.check.due > 0 ? (
-            <button type="button" onClick={() => start("check", { recheck: true })} disabled={Boolean(busy)} aria-busy={busy === "check"}>
+            <button type="button" onClick={() => start("check", { recheck: true })} disabled={Boolean(busy) || navigating} aria-busy={busy === "check"}>
               <span><span className="t">{busy === "check" ? "Starting…" : "Check what you fixed"}</span><span className="muted tiny">{data.check.due} {data.check.due === 1 ? "idea is" : "ideas are"} due for a check</span></span>
               <Chevron />
             </button>

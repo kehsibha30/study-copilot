@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useGo } from "@/components/useGo";
 import { useEffect, useState } from "react";
 import { TOPICS } from "@/lib/speed/cards";
 import { LEVEL_NAMES, streakDays, type Calc, type CalcStatus } from "@/lib/speed/stats";
@@ -15,7 +15,7 @@ const TAG: Record<CalcStatus, { cls: string; label: string }> = {
 };
 
 export default function SpeedHome() {
-  const router = useRouter();
+  const { go, navigating } = useGo();
   const [d, setD] = useState<{ calc: Calc; suggested: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -28,14 +28,15 @@ export default function SpeedHome() {
   }, []);
 
   async function daily() {
-    if (busy) return;
+    if (busy || navigating) return;
     setBusy(true);
     setError(null);
     try {
       const res = await fetch("/api/speed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "daily" }) });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error ?? "We could not start that. Try again.");
-      router.push(`/speed/run/${j.id}`);
+      go(`/speed/run/${j.id}`);
+      setBusy(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "We could not start that. Try again.");
       setBusy(false);
@@ -62,7 +63,7 @@ export default function SpeedHome() {
         <Link href={`/speed/${pick.id}`} className="btn wide" style={{ textAlign: "center" }}>
           Start with {pick.label}
         </Link>
-        <button type="button" className="btn ghost wide" disabled={busy} onClick={daily}>{busy ? "Getting your round ready…" : "Today's round · 6 questions"}</button>
+        <button type="button" className="btn ghost wide" disabled={busy || navigating} onClick={daily}>{busy || navigating ? "Getting your round ready…" : "Today's round · 6 questions"}</button>
       </div>
       {error && <div className="error" role="alert">{error}</div>}
 

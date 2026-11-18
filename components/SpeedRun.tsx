@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useGo } from "./useGo";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SpeedView } from "@/app/api/speed/[id]/route";
 
@@ -12,7 +12,7 @@ const store = (id: string) => `speed-run-${id}`;
 // app is in front) and handed in with the answers, which are marked on the server. The answers are never in the page
 // until the drill is handed in.
 export default function SpeedRun({ id }: { id: string }) {
-  const router = useRouter();
+  const { go: goTo, navigating } = useGo();
   const [run, setRun] = useState<SpeedView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
@@ -120,13 +120,14 @@ export default function SpeedRun({ id }: { id: string }) {
   }
 
   async function again(body: Record<string, string>) {
-    if (busy) return;
+    if (busy || navigating) return;
     setBusy(true);
     try {
       const res = await fetch("/api/speed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error ?? "We could not start that drill. Try again.");
-      router.push(`/speed/run/${d.id}`);
+      goTo(`/speed/run/${d.id}`);
+      setBusy(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "We could not start that drill. Try again.");
       setBusy(false);
@@ -242,9 +243,9 @@ export default function SpeedRun({ id }: { id: string }) {
       {error && <div className="error" role="alert">{error}</div>}
       <div className="stack" style={{ gap: 10 }}>
         {beat ? (
-          <button type="button" className="btn wide" disabled={busy} onClick={() => again(beat)}>{best ? `Beat ${secs(Math.min(best, r.avgMs))}` : "Go again"}</button>
+          <button type="button" className="btn wide" disabled={busy || navigating} onClick={() => again(beat)}>{best ? `Beat ${secs(Math.min(best, r.avgMs))}` : "Go again"}</button>
         ) : run.topic ? (
-          <button type="button" className="btn wide" disabled={busy} onClick={() => again({ kind: "topic", topic: run.topic! })}>Try the 10-question drill</button>
+          <button type="button" className="btn wide" disabled={busy || navigating} onClick={() => again({ kind: "topic", topic: run.topic! })}>Try the 10-question drill</button>
         ) : (
           <Link href="/speed" className="btn wide" style={{ textAlign: "center" }}>Back to Speed</Link>
         )}

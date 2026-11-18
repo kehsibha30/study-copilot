@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useGo } from "@/components/useGo";
 import { useEffect, useRef, useState } from "react";
 import { when } from "@/lib/format";
 import type { PaperRow } from "@/lib/view";
 
 export default function Home() {
-  const router = useRouter();
+  const { go, navigating } = useGo();
   const input = useRef<HTMLInputElement>(null);
   const [papers, setPapers] = useState<PaperRow[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -73,7 +73,7 @@ export default function Home() {
 
   // Pages go straight to storage (the host limits how much one request can carry), then the paper is created.
   async function upload(files: File[]) {
-    if (busy || files.length === 0) return;
+    if (busy || navigating || files.length === 0) return;
     setBusy(true);
     setError(null);
     const meta = files.map((f) => ({ name: f.name, type: f.type, size: f.size }));
@@ -93,7 +93,8 @@ export default function Home() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "The upload did not go through. Try again.");
       }
-      router.push(`/papers/${ready.id}`);
+      go(`/papers/${ready.id}`);
+      setBusy(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "The upload did not go through. Try again.");
       setBusy(false);
@@ -150,7 +151,7 @@ export default function Home() {
               </div>
             ))}
           </div>
-          <button type="button" className="btn wide" disabled={busy} onClick={() => upload(staged.map((s) => s.file))}>
+          <button type="button" className="btn wide" disabled={busy || navigating} onClick={() => upload(staged.map((s) => s.file))}>
             {busy ? "Uploading your paper…" : `Read my paper (${staged.length} ${staged.length === 1 ? "page" : "pages"})`}
           </button>
         </div>
