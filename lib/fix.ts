@@ -2,7 +2,8 @@ import { z } from "zod";
 import { askJson, askText, RefusalError, StepError } from "./claude";
 import { norm, verdict } from "./grade";
 import { pageOf } from "./pages";
-import { STALE_MS, loadPaper, updatePaper, updatePaperIf, type Cursor, type Fix, type FixStep, type Paper, type Question, type Twist } from "./store";
+import { PictureAsk, cleanPicture, describePicture } from "./picture";
+import { STALE_MS, loadPaper, updatePaper, updatePaperIf, type Cursor, type Explainer, type Picture, type Fix, type FixStep, type Paper, type Question, type Twist } from "./store";
 
 // Stage 2: fix one idea. A short walkthrough of the student's own question (small steps, a hint,
 // a nudge on a wrong choice), then a new question to try alone, then a second go at the other
@@ -14,6 +15,12 @@ import { STALE_MS, loadPaper, updatePaper, updatePaperIf, type Cursor, type Fix,
 // can never build (and pay for) the same lesson twice. A lock older than STALE_MS belongs to a dead job.
 function buildingNow(fix: Fix) {
   return Boolean(fix.job) && Date.now() - Date.parse(fix.startedAt) < STALE_MS;
+}
+
+// The long walkthrough is offered once, and only after the new question was missed in a short lesson.
+function canDeepen(fix: Fix): boolean {
+  if (fix.status !== "ready" || fix.deep || fix.steps.length > 0 || !fix.twist || fix.twistChoice === null) return false;
+  return !fix.twist.options[fix.twistChoice]?.right;
 }
 
 function q(paper: Paper, n: number): Question | undefined {
@@ -31,10 +38,32 @@ function wrongInIdea(paper: Paper, idea: string): number[] {
 }
 
 // Creates the record and marks it as building. Returns false if there is nothing to fix.
-export async function startFix(paperId: string, idea: string): Promise<boolean> {
+export async function startFix(paperId: string, idea: string, deep = false): Promise<boolean> {
   const paper = await loadPaper(paperId);
   if (!paper?.analysed || !paper.ideas?.[Number(idea)]) return false;
   const existing = paper.fixes?.[idea];
+  if (deep) {
+    // "Walk me through it": only after a missed new question, and only once.
+    if (!existing || !canDeepen(existing)) return Boolean(existing);
+    await updatePaper(paperId, (p) => {
+      const f = p.fixes?.[idea];
+      if (!f || !canDeepen(f)) return;
+      f.status = "building";
+      f.startedAt = new Date().toISOString();
+      f.deep = true;
+      delete f.job;
+      delete f.error;
+      f.steps = [];
+      f.twist = null;
+      f.twistChoice = null;
+      f.cursor = { kind: "step", index: 0 };
+      f.tries = {};
+      f.hints = [];
+      f.shown = [];
+      f.retries = {};
+    });
+    return true;
+  }
   if (existing && existing.status !== "failed") return true;
   const wrong = wrongInIdea(paper, idea);
   if (wrong.length === 0) return false;
@@ -56,6 +85,8 @@ export async function startFix(paperId: string, idea: string): Promise<boolean> 
       // Doubts already asked are kept if a failed build is retried.
       doubts: existing?.doubts ?? [],
       flagged: [],
+      // A failed long walkthrough is retried as a long walkthrough.
+      ...(existing?.deep ? { deep: true } : {}),
     };
   });
   return true;
@@ -74,13 +105,14 @@ export async function buildFix(paperId: string, idea: string): Promise<void> {
   try {
     const fix = paper.fixes![idea];
     try {
-      const lesson = await makeLesson(paper, idea, fix.anchor);
+      const lesson = fix.deep ? await makeLesson(paper, idea, fix.anchor) : await makeShortLesson(paper, idea, fix.anchor);
       await updatePaper(paperId, (p) => {
         const f = p.fixes?.[idea];
         if (!f) return;
         f.steps = lesson.steps;
         f.connect = lesson.connect;
         f.twist = lesson.twist;
+        if (lesson.explainer) f.explainer = lesson.explainer;
         f.cursor = lesson.steps.length > 0 ? { kind: "step", index: 0 } : { kind: "connect" };
         f.status = "ready";
         delete f.error;
@@ -156,7 +188,7 @@ function shuffle<T>(items: T[]): T[] {
   return out;
 }
 
-type Lesson = { steps: FixStep[]; connect: string; twist: Twist | null };
+type Lesson = { steps: FixStep[]; connect: string; twist: Twist | null; explainer?: Explainer };
 
 async function makeLesson(paper: Paper, idea: string, anchorN: number): Promise<Lesson> {
   const stored = paper.ideas?.[Number(idea)];
@@ -275,6 +307,137 @@ Give only the numbers.`,
   if (!best || (best.steps.length === 0 && !best.twist)) {
     throw new StepError("We could not build a walkthrough for this idea that passed our own check. Try again.");
   }
+  return best;
+}
+
+
+// ---------- the short lesson (decision 7R): why he picked it, the idea, a picture when it needs seeing ----------
+
+const ShortSchema = z.object({
+  why: z.string(),
+  rule: z.string(),
+  picture: PictureAsk,
+  twist: z.object({
+    text: z.string(),
+    options: z.array(z.object({ text: z.string(), right: z.boolean() })),
+    explain: z.string(),
+  }),
+});
+
+const ShortCheckSchema = z.object({ why: z.boolean(), rule: z.boolean(), picture: z.boolean(), twist: z.number() });
+
+async function makeShortLesson(paper: Paper, idea: string, anchorN: number): Promise<Lesson> {
+  const stored = paper.ideas?.[Number(idea)];
+  const anchor = q(paper, anchorN);
+  if (!stored || !anchor) throw new StepError("We could not find that question any more.");
+  const mine = paper.answers[String(anchorN)];
+  const right = paper.key?.[String(anchorN)]?.answer;
+  const note = paper.notes?.find((x) => x.n === anchorN);
+  const page = await pageOf(paper, anchor);
+
+  const prompt = `A student got this question wrong.
+
+${questionText(anchor)}
+
+The student chose (${mine}). The correct answer is (${right}).
+The idea they need: ${stored.name}. ${stored.explain}
+${note?.whyTempting ? `Why their choice looks right: ${note.whyTempting}` : ""}
+
+Write a very short lesson.
+
+why: one or two plain sentences. Say what the option they chose says, when that would be right or why it can look right, then the one thing it misses. Speak to them as "you". Do not guess what they were thinking: never write "because you", "maybe because" or "you probably". Do not give the right option letter.
+
+rule: one or two short sentences. The idea in plain words, and what to check next time a question like this comes up. It must be true.
+
+picture: an animation that shows the idea, only if the idea is about something you need to SEE move or change. There are four templates. Use one only when it fits this idea exactly. Otherwise use template "none".
+- "heating": a pot on a stove with a graph of temperature against time that rises, then goes flat at the boiling point. Fill thing (for example "Water"), start (starting temperature in °C) and boil (boiling point in °C).
+- "depth": a gauge going down through water or air, with a pressure bar that grows with depth. Fill medium ("water" or "air").
+- "expand": a container of particles that spread out and take more space when heated, so density drops, and pack closer when cooled. Fill thing, cold (like "5 °C") and hot (like "60 °C").
+- "cube": a cube turning to show which faces are opposite each other. Fill faces: six short labels (like "1" to "6"), where faces 1 and 2 are opposite, 3 and 4 are opposite, 5 and 6 are opposite. Read them from the figure on the page; never use the usual 1 to 6 pairing unless the figure shows it.
+When template is "none" or a field does not apply, use "" for text, 0 for numbers, "none" for medium and [] for faces. Never invent a picture for an idea you can explain in two sentences.
+
+twist: one new question that tests the same idea, at the same class level. Change what is given or what is asked, not just the numbers, so it cannot be answered by copying the lesson. It must be answerable from its own words, with no figure. Four options, exactly one right, with wrong options a student could really fall for. Check your own arithmetic.
+- explain: one or two sentences showing why the right option is right.
+
+Write for a 13-year-old, speaking to them as "you" (never "the student"). Short plain sentences. Maths in plain text (x^2, 3/4, 10^5). Do not scold. Do not praise unless it is true and about something they did.`;
+
+  let best: (Lesson & { explainer: Explainer }) | null = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const out = await askJson({
+      paperId: paper.id,
+      job: "lesson",
+      step: `lesson-${idea}-${attempt}`,
+      schema: ShortSchema,
+      effort: "medium",
+      content: [...page, { type: "text", text: prompt }],
+    });
+
+    const why = out.why.trim();
+    const rule = out.rule.trim();
+    const picture = cleanPicture(out.picture);
+    const twistOk = out.twist.options.length === 4 && out.twist.options.filter((o) => o.right).length === 1 && out.twist.text.trim();
+    const twist: Twist | null = twistOk
+      ? { text: out.twist.text.trim(), explain: out.twist.explain.trim(), options: shuffle(out.twist.options.map((o) => ({ text: o.text.trim(), right: o.right }))) }
+      : null;
+    if (!why || !rule) continue;
+
+    // A second solve that has not seen which option is right. It must find the rule true, the picture true
+    // and the new question's right option for itself. A picture it doubts is dropped; a rule or an explanation it doubts sinks the attempt.
+    let ruleOk = false;
+    let pictureOk = false;
+    let twistAgreed = false;
+    try {
+      const check = await askJson({
+        paperId: paper.id,
+        job: "verify",
+        step: `verify-${idea}-${attempt}`,
+        schema: ShortCheckSchema,
+        effort: "medium",
+        content: [
+          ...page,
+          {
+            type: "text",
+            text: `Here is a question from a test paper, then a short lesson about it.
+
+${questionText(anchor)}
+
+Work out the correct answer yourself first.
+
+The student chose (${mine}). The lesson tells them: ${why}
+The lesson then says: ${rule}
+${picture ? `The lesson picture: ${describePicture(picture)}` : "There is no picture."}
+
+New question: ${twist ? `${twist.text}\n${twist.options.map((o, j) => `  ${j + 1}. ${o.text}`).join("\n")}` : "(none)"}
+
+Answer four things.
+why: true if everything the first part says about the option the student chose, and about what it misses, is correct and fits the correct answer. Say false if any sentence is wrong, misleading or confusing.
+rule: true if the lesson's statement is correct and agrees with the correct answer to the question.
+picture: true if the picture description is correct, shows the idea of this question, and agrees with the figure on the page where it refers to one. Say true if there is no picture.
+twist: the number of the correct option of the new question, or 0 if there is no new question or no single correct option.`,
+          },
+        ],
+      });
+      ruleOk = check.rule && check.why;
+      pictureOk = !picture || check.picture;
+      twistAgreed = Boolean(twist && twist.options[check.twist - 1]?.right === true);
+    } catch (error) {
+      if (!(error instanceof RefusalError)) throw error;
+    }
+    if (!ruleOk) continue;
+
+    const lesson = {
+      steps: [] as FixStep[],
+      connect: rule,
+      twist: twistAgreed ? twist : null,
+      explainer: { why, picture: pictureOk ? picture : null } satisfies Explainer,
+    };
+    const score = (l: { twist: Twist | null; explainer: Explainer }) => 1 + (l.twist ? 2 : 0) + (l.explainer.picture ? 1 : 0);
+    if (!best || score(lesson) > score(best)) best = lesson;
+    // A picture the check dropped is not retried: the lesson is fine as text.
+    if (lesson.twist) break;
+  }
+
+  if (!best) throw new StepError("We could not build a lesson for this idea that passed our own check. Try again.");
   return best;
 }
 
@@ -397,6 +560,9 @@ export type FixView = {
   cursor: Cursor;
   step?: { ask: string; hint: string | null; done: boolean; options: { text: string; tried: boolean; right: boolean | null; say: string | null }[] };
   connect?: string;
+  explainer?: { why: string; picture: Picture | null } | null;
+  canDeepen: boolean;
+  deep: boolean;
   twist?: { text: string; done: boolean; chosen: number | null; options: { text: string; right: boolean | null }[]; explain: string | null };
   retry?: {
     left: number;
@@ -437,6 +603,8 @@ export function fixView(paper: Paper, idea: string): FixView | null {
     isPdf,
     totalSteps: fix.steps.length,
     hasTwist: Boolean(fix.twist),
+    canDeepen: canDeepen(fix),
+    deep: Boolean(fix.deep),
     trail: [],
     cursor: c,
     doubts: fix.doubts.map((d) => ({ q: d.q, a: d.a, flagged: Boolean(d.flagged) })),
@@ -467,6 +635,7 @@ export function fixView(paper: Paper, idea: string): FixView | null {
     };
   } else if (c.kind === "connect") {
     view.connect = fix.connect;
+    view.explainer = fix.explainer ?? null;
   } else if (c.kind === "twist" && fix.twist) {
     const done = fix.twistChoice !== null;
     view.twist = {
@@ -539,7 +708,9 @@ export async function askDoubt(paperId: string, idea: string, raw: string): Prom
     if (fix.retries[String(fix.retryList[c.index])] === undefined) hold = "They have not answered it yet. Do not tell them the answer; point them at the idea.";
   }
 
-  const walkthrough = fix.steps.map((s, i) => `Step ${i + 1}: ${s.ask} -> ${s.options.find((o) => o.right)?.text}`).join("\n");
+  const walkthrough = fix.steps.length > 0
+    ? fix.steps.map((s, i) => `Step ${i + 1}: ${s.ask} -> ${s.options.find((o) => o.right)?.text}`).join("\n")
+    : `Short lesson. ${fix.explainer?.why ?? ""} ${fix.connect}`.trim();
   const earlier = fix.doubts.filter((d) => !d.flagged).slice(-3).map((d) => `Student: ${d.q}\nYou: ${d.a}`).join("\n");
   const page = c.kind === "retry" ? await pageOf(paper, q(paper, fix.retryList[c.index]) ?? anchor) : await pageOf(paper, anchor);
 

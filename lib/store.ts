@@ -51,6 +51,16 @@ export type FixStep = {
 
 export type Twist = { text: string; options: { text: string; right: boolean }[]; explain: string };
 
+// A lesson picture: one of a few hand-built animations. The AI only picks the template and fills the labels and numbers.
+// Every field is checked in lib/picture.ts before it is stored.
+export type Picture =
+  | { template: "heating"; thing: string; start: number; boil: number }
+  | { template: "depth"; medium: "water" | "air" }
+  | { template: "expand"; thing: string; cold: string; hot: string }
+  | { template: "cube"; faces: [string, string, string, string, string, string] }; // faces 0+1, 2+3 and 4+5 are opposite pairs
+
+export type Explainer = { why: string; picture: Picture | null };
+
 export type Cursor =
   | { kind: "step"; index: number }
   | { kind: "connect" }
@@ -65,7 +75,9 @@ export type Fix = {
   error?: string;
   anchor: number;
   steps: FixStep[];
-  connect: string;
+  connect: string; // the idea in plain words (the rule line of a short lesson)
+  explainer?: Explainer; // short lesson (18 Nov 2026): why he picked it, and a picture when the idea needs seeing
+  deep?: boolean; // the long walkthrough was asked for after a missed new question
   twist: Twist | null;
   retryList: number[];
   cursor: Cursor;

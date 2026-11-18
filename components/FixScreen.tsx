@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FixView } from "@/lib/fix";
+import LessonPicture from "./LessonPicture";
 
 export default function FixScreen() {
   const { id, idea } = useParams<{ id: string; idea: string }>();
@@ -70,6 +71,23 @@ export default function FixScreen() {
     }
   }
 
+  // "Walk me through it": the long walkthrough, only after the new question was missed.
+  async function deepen() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`${base}?deep=1`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setFix(data.fix);
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : "That did not go through. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const back = <Link href={`/papers/${id}`}>Back to your paper</Link>;
 
   if (!fix) {
@@ -94,8 +112,8 @@ export default function FixScreen() {
     return (
       <div className="wait" role="status" aria-live="polite">
         <div className="dots" aria-hidden="true"><span /><span /><span /></div>
-        <h2>Breaking question {fix.anchor.n} into small steps</h2>
-        <p className="muted" style={{ marginTop: 10 }}>Each step is checked before you see it. This takes about half a minute.</p>
+        <h2>{fix.deep ? `Breaking question ${fix.anchor.n} into small steps` : `Getting your lesson on question ${fix.anchor.n} ready`}</h2>
+        <p className="muted" style={{ marginTop: 10 }}>It is checked before you see it. This takes about half a minute.</p>
       </div>
     );
   }
@@ -122,7 +140,19 @@ export default function FixScreen() {
         <h1>{fix.idea.name}</h1>
       </div>
 
-      {c.kind !== "done" && c.kind !== "retry" && c.kind !== "twist" && (
+      {c.kind === "connect" && fix.explainer && (
+        <details className="card qfold">
+          <summary>
+            <span className="muted tiny">Your question {fix.anchor.n} · you chose {fix.anchor.mine}</span>
+          </summary>
+          <p className="yourq" style={{ marginTop: 8 }}>{fix.anchor.text}</p>
+          <p className="muted" style={{ marginTop: 8 }}>
+            You chose {fix.anchor.mine}. {fix.anchor.options.find((o) => o.label === fix.anchor.mine)?.text} · {figure(fix.anchor.page, fix.anchor.fileIndex, fix.anchor.hasFigure)}
+          </p>
+        </details>
+      )}
+
+      {c.kind !== "done" && c.kind !== "retry" && c.kind !== "twist" && !(c.kind === "connect" && fix.explainer) && (
         <div className="card">
           <span className="muted tiny">
             Your question {fix.anchor.n} · {figure(fix.anchor.page, fix.anchor.fileIndex, fix.anchor.hasFigure)}
@@ -183,7 +213,18 @@ export default function FixScreen() {
           </>
         )}
 
-        {c.kind === "connect" && (
+        {c.kind === "connect" && fix.explainer && (
+          <>
+            <p className="why">{fix.explainer.why}</p>
+            {fix.explainer.picture && <LessonPicture picture={fix.explainer.picture} />}
+            <p className="rule">{fix.connect || fix.idea.explain}</p>
+            <button className="btn" onClick={() => move({ type: "next" })} aria-busy={busy}>
+              Try a new question
+            </button>
+          </>
+        )}
+
+        {c.kind === "connect" && !fix.explainer && (
           <>
             <div className="stepno">Put it together</div>
             <p className="ask" style={{ marginBottom: 16 }}>{fix.connect || fix.idea.explain}</p>
@@ -215,7 +256,10 @@ export default function FixScreen() {
             {fix.twist.explain && <p className="say" style={{ paddingLeft: 0, marginTop: 12 }}>{fix.twist.explain}</p>}
             <div className="row" style={{ marginTop: 16, justifyContent: "space-between" }}>
               {fix.twist.done ? (
-                <button className="btn" onClick={() => move({ type: "next" })} aria-busy={busy}>Carry on</button>
+                <span className="row" style={{ gap: 18 }}>
+                  <button className="btn" onClick={() => move({ type: "next" })} aria-busy={busy}>Carry on</button>
+                  {fix.canDeepen && <button className="linkbtn" onClick={deepen}>Walk me through it</button>}
+                </span>
               ) : (
                 <button className="linkbtn" onClick={() => move({ type: "skip" })}>I don&apos;t know</button>
               )}
