@@ -19,6 +19,7 @@ export type QuestionView = {
   verdict?: Verdict;
   correct?: string | null;
   keySource?: "printed" | "solved" | "best" | "unsure";
+  fromBook?: boolean;
   whyTempting?: string;
   // Not counted because the student's own choice could also be right.
   disputed?: boolean;
@@ -91,6 +92,7 @@ export function paperView(paper: Paper): PaperView {
       verdict: v,
       correct: v === "unsure" ? null : entry?.answer ?? null,
       keySource: entry?.source,
+      fromBook: Boolean(entry?.book),
       whyTempting: note?.whyTempting,
       disputed: v === "unsure" && (entry?.source === "solved" || entry?.source === "best") && Boolean(note?.disputed),
     };

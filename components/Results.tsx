@@ -33,6 +33,27 @@ export default function Results({ paper, onChange }: { paper: PaperView; onChang
     }
   }
 
+  // Questions whose answer the AI worked out itself (or could not settle), and no book answer yet.
+  const checkList = paper.questions.filter(
+    (q) => q.type === "mcq" && !q.fromBook && (q.keySource === "best" || q.verdict === "unsure" || (q.verdict === "wrong" && q.keySource === "solved"))
+  );
+
+  async function bookSays(n: number, answer: string) {
+    setError(null);
+    try {
+      const res = await fetch(`/api/papers/${paper.id}/book`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ n, answer }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      onChange(data.paper);
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : "That did not go through. Try again.");
+    }
+  }
+
   async function leaveOut(on: boolean) {
     setError(null);
     try {
@@ -109,7 +130,7 @@ export default function Results({ paper, onChange }: { paper: PaperView; onChang
             </p>
             {idea.questions.map((n) => {
               const q = byN.get(n);
-              return q ? <Mistake key={n} q={q} paper={paper} onReport={() => report(n, true)} /> : null;
+              return q ? <Mistake key={n} q={q} paper={paper} /> : null;
             })}
           </div>
         </details>
@@ -179,6 +200,29 @@ export default function Results({ paper, onChange }: { paper: PaperView; onChang
             </div>
           </details>
         )}
+        {checkList.length > 0 && (
+          <details className="quiet">
+            <summary>For a parent: check {checkList.length === 1 ? "this answer" : `these ${checkList.length} answers`} against the book</summary>
+            <div className="inner stack">
+              <p className="muted">
+                These are answers the AI worked out itself, or could not settle. Tap the answer your book gives. The book always wins, and the question is counted from then on.
+              </p>
+              {checkList.map((q) => (
+                <div key={q.n}>
+                  <Line q={q} paper={paper} note={`${q.verdict === "unsure" ? "We could not work out the answer." : `Our answer: ${q.correct}.`} He chose ${paper.answers[String(q.n)] || "nothing"}.`} />
+                  <div className="row" style={{ marginTop: 6, gap: 8 }}>
+                    <span className="muted tiny">Book says:</span>
+                    {q.options.map((o) => (
+                      <button key={o.label} type="button" className="btn ghost" style={{ padding: "4px 12px" }} title={o.text} onClick={() => bookSays(q.n, o.label)}>
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
         <details className="quiet">
           <summary>How this was checked</summary>
           <div className="inner stack muted">
@@ -186,7 +230,7 @@ export default function Results({ paper, onChange }: { paper: PaperView; onChang
               {paper.hasPrintedKey
                 ? "Your answers were compared with the answer key printed on the paper."
                 : "This paper has no answer key, so the AI solved every question twice, in two different ways. A question counts only when both solutions agree. Where your answer and ours differ, a stronger AI looks again, and any answer it gives is marked Our best answer."}{" "}
-              The AI can still be wrong. If an answer looks wrong to you, say so and it will be left out.
+              The AI can still be wrong. A parent can check the doubtful answers against the book (below), and the book always wins.
             </p>
             <p>AI cost for this paper: ${paper.costUsd.toFixed(2)}</p>
           </div>
@@ -249,7 +293,7 @@ function Line({ q, paper, note }: { q: QuestionView; paper: PaperView; note?: st
   );
 }
 
-function Mistake({ q, paper, onReport }: { q: QuestionView; paper: PaperView; onReport: () => void }) {
+function Mistake({ q, paper }: { q: QuestionView; paper: PaperView }) {
   const mine = paper.answers[String(q.n)];
   return (
     <div className="mistake">
@@ -267,11 +311,8 @@ function Mistake({ q, paper, onReport }: { q: QuestionView; paper: PaperView; on
           </div>
         );
       })}
-      {q.keySource === "best" && <p className="muted tiny" style={{ marginTop: 6 }}>Our best answer, worked out by the AI, not taken from your book. If your book says something else, tap &ldquo;This looks wrong&rdquo;.</p>}
+      {q.keySource === "best" && <p className="muted tiny" style={{ marginTop: 6 }}>Our best answer, worked out by the AI, not taken from your book. A parent can check it against the book at the bottom of this page.</p>}
       {q.whyTempting && <p className="why">Why {mine} looks right: {q.whyTempting}</p>}
-      <p style={{ marginTop: 8 }}>
-        <button className="linkbtn" onClick={onReport}>This looks wrong</button>
-      </p>
     </div>
   );
 }

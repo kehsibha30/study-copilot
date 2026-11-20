@@ -29,6 +29,8 @@ export type KeyEntry = {
   // best: the cheap pair was doubtful and two strong solves agreed (decision 20 Nov 2026). Our best answer, not from a book.
   // unsure: the solves disagreed, or neither found an answer. Not counted.
   source: "printed" | "solved" | "best" | "unsure";
+  // A parent entered this from the book. Outranks every other answer.
+  book?: boolean;
 };
 
 export type MistakeNote = {
