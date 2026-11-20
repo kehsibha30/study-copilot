@@ -1,3 +1,4 @@
+import { saveToBank } from "@/lib/bank";
 import { norm } from "@/lib/grade";
 import { loadPaper, updatePaper } from "@/lib/store";
 import { paperView } from "@/lib/view";
@@ -30,5 +31,10 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       note.aiAnswer = null;
     }
   });
+  try {
+    await saveToBank(saved, { [String(n)]: label }, 3);
+  } catch (error) {
+    console.error(`[paper ${id}] could not save the book answer`, error);
+  }
   return Response.json({ paper: paperView(saved) });
 }

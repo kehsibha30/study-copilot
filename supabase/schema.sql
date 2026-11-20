@@ -50,3 +50,31 @@ alter table usage enable row level security;
 insert into storage.buckets (id, name, public, file_size_limit)
 values ('papers', 'papers', false, 20971520)
 on conflict (id) do nothing;
+
+-- Saved answers (20 Nov 2026): answers a person or the paper's own key vouched for, reused on repeated questions.
+-- Deploy the app first, then run this. The app works without it (saved answers stay off).
+create table if not exists verified_answers (
+  fingerprint text primary key,
+  answer_text text not null,
+  rank integer not null,
+  from_title text,
+  confirmations integer not null default 1,
+  changes integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table verified_answers enable row level security;
+
+create or replace function save_verified_answer(p_fp text, p_text text, p_rank integer, p_from text)
+returns void language plpgsql as $$
+begin
+  insert into verified_answers as v (fingerprint, answer_text, rank, from_title)
+  values (p_fp, p_text, p_rank, p_from)
+  on conflict (fingerprint) do update set
+    answer_text = case when excluded.rank >= v.rank then excluded.answer_text else v.answer_text end,
+    from_title = case when excluded.rank >= v.rank then excluded.from_title else v.from_title end,
+    rank = greatest(v.rank, excluded.rank),
+    changes = v.changes + case when excluded.rank >= v.rank and excluded.answer_text <> v.answer_text then 1 else 0 end,
+    confirmations = v.confirmations + case when excluded.answer_text = v.answer_text then 1 else 0 end,
+    updated_at = now();
+end $$;

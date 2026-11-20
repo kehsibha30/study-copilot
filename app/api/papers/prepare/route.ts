@@ -1,10 +1,10 @@
 import { listPapers, newId, uploadLink } from "@/lib/store";
-import { checkFiles, storedName, type FileMeta } from "@/lib/uploads";
+import { checkFiles, checkKeyFiles, keyStoredName, storedName, type FileMeta } from "@/lib/uploads";
 
 // Step 1 of an upload: check the files, then hand the browser one-time links to put each page
 // straight into storage (Vercel refuses request bodies over 4.5 MB, so pages cannot pass through it).
 export async function POST(request: Request) {
-  let body: { files?: FileMeta[]; hash?: string };
+  let body: { files?: FileMeta[]; keyFiles?: FileMeta[]; hash?: string };
   try {
     body = await request.json();
   } catch {
@@ -13,6 +13,9 @@ export async function POST(request: Request) {
   const files = Array.isArray(body.files) ? body.files : [];
   const problem = checkFiles(files);
   if (problem) return Response.json({ error: problem }, { status: 400 });
+  const keyFiles = Array.isArray(body.keyFiles) ? body.keyFiles : [];
+  const keyProblem = keyFiles.length > 0 ? checkKeyFiles(keyFiles) : null;
+  if (keyProblem) return Response.json({ error: keyProblem }, { status: 400 });
 
   // A double tap on the upload button must not create (and pay for) the same paper twice.
   const hash = typeof body.hash === "string" ? body.hash : "";
@@ -28,5 +31,11 @@ export async function POST(request: Request) {
       return { stored, url: (await uploadLink(id, stored)).url };
     })
   );
-  return Response.json({ id, uploads });
+  const keyUploads = await Promise.all(
+    keyFiles.map(async (f, i) => {
+      const stored = keyStoredName(i, f.type);
+      return { stored, url: (await uploadLink(id, stored)).url };
+    })
+  );
+  return Response.json({ id, uploads, keyUploads });
 }

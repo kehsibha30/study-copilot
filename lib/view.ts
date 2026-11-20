@@ -20,6 +20,9 @@ export type QuestionView = {
   correct?: string | null;
   keySource?: "printed" | "solved" | "best" | "unsure";
   fromBook?: boolean;
+  fromBank?: boolean;
+  bankFrom?: string;
+  why?: string;
   whyTempting?: string;
   // Not counted because the student's own choice could also be right.
   disputed?: boolean;
@@ -39,6 +42,10 @@ export type PaperView = {
   marksLooks: number; // extra looks made only to find the student's marks
   pageProblems: { page: number; problem: string }[];
   qualityHold: boolean;
+  keyNote: string | null;
+  regroupOffer: boolean;
+  hasPractice: boolean;
+  hasKeyPage: boolean;
   hasPrintedKey: boolean;
   fileCount: number;
   isPdf: boolean;
@@ -93,6 +100,9 @@ export function paperView(paper: Paper): PaperView {
       correct: v === "unsure" ? null : entry?.answer ?? null,
       keySource: entry?.source,
       fromBook: Boolean(entry?.book),
+      fromBank: Boolean(entry?.bank),
+      bankFrom: entry?.bankFrom,
+      why: entry?.why,
       whyTempting: note?.whyTempting,
       disputed: v === "unsure" && (entry?.source === "solved" || entry?.source === "best") && Boolean(note?.disputed),
     };
@@ -131,6 +141,10 @@ export function paperView(paper: Paper): PaperView {
     marksLooks: paper.marksLooks ?? 0,
     pageProblems: paper.pageProblems ?? [],
     qualityHold: paper.qualityHold === "waiting",
+    keyNote: paper.keyNote ?? null,
+    regroupOffer: Boolean(paper.regroupOffer),
+    hasPractice: Object.keys(paper.fixes ?? {}).length > 0,
+    hasKeyPage: Boolean(paper.keyFiles?.length),
     hasPrintedKey: Object.keys(paper.printedKey ?? {}).length > 0,
     fileCount: paper.files.length,
     isPdf,

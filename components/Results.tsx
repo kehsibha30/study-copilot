@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { PaperView, QuestionView } from "@/lib/view";
 
 export default function Results({ paper, onChange }: { paper: PaperView; onChange: (p: PaperView) => void }) {
@@ -35,8 +35,63 @@ export default function Results({ paper, onChange }: { paper: PaperView; onChang
 
   // Questions whose answer the AI worked out itself (or could not settle), and no book answer yet.
   const checkList = paper.questions.filter(
-    (q) => q.type === "mcq" && !q.fromBook && (q.keySource === "best" || q.verdict === "unsure" || (q.verdict === "wrong" && q.keySource === "solved"))
+    (q) => q.type === "mcq" && !q.fromBook && (q.keySource === "best" || q.fromBank || q.verdict === "unsure" || (q.verdict === "wrong" && q.keySource === "solved"))
   );
+
+  const canAddKey = !paper.hasKeyPage && !paper.hasPrintedKey;
+
+  // Late answer key: read it, then offer (never force) to regroup the mistakes, which costs money.
+  const keyInput = useRef<HTMLInputElement>(null);
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyMsg, setKeyMsg] = useState<string | null>(null);
+  const [regrouping, setRegrouping] = useState(false);
+
+  async function addKey(chosen: FileList | null) {
+    if (!chosen || chosen.length === 0 || keyBusy) return;
+    const files = Array.from(chosen).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    setKeyBusy(true);
+    setKeyMsg(null);
+    setError(null);
+    try {
+      const meta = files.map((f) => ({ name: f.name, type: f.type, size: f.size }));
+      const post = (action: string) =>
+        fetch(`/api/papers/${paper.id}/key-page`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, files: meta }) });
+      const prep = await post("prepare");
+      const ready = await prep.json();
+      if (!prep.ok) throw new Error(ready.error);
+      await Promise.all(
+        (ready.uploads as { url: string }[]).map(async (u, i) => {
+          const put = await fetch(u.url, { method: "PUT", headers: { "Content-Type": files[i].type, "x-upsert": "true" }, body: files[i] });
+          if (!put.ok) throw new Error("A page did not finish uploading. Check your connection and try again.");
+        })
+      );
+      const res = await post("apply");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setKeyMsg(data.note);
+      if (data.paper) onChange(data.paper);
+    } catch (e) {
+      setKeyMsg(e instanceof Error && e.message ? e.message : "That did not go through. Try again.");
+    } finally {
+      setKeyBusy(false);
+      if (keyInput.current) keyInput.current.value = "";
+    }
+  }
+
+  async function regroup() {
+    if (regrouping) return;
+    setRegrouping(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/papers/${paper.id}/regroup`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      onChange(data.paper);
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : "That did not go through. Try again.");
+      setRegrouping(false);
+    }
+  }
 
   async function bookSays(n: number, answer: string) {
     setError(null);
@@ -87,6 +142,13 @@ export default function Results({ paper, onChange }: { paper: PaperView; onChang
           {s.skipped > 0 && `, and skipped ${s.skipped}`}.
           {s.unsure > 0 && ` ${s.unsure} ${s.unsure === 1 ? "question was" : "questions were"} not counted because we could not be sure of the answer.`}
         </p>
+        {paper.regroupOffer && (
+          <div className="notice" style={{ marginTop: 12 }}>
+            The answer key changed some answers. Group the mistakes again so the ideas match? It costs about 10 to 30 cents.
+            {paper.hasPractice && " Practice he has already done on the old ideas will start again."}{" "}
+            <button type="button" className="linkbtn" onClick={regroup} aria-busy={regrouping}>{regrouping ? "Starting…" : "Group them again"}</button>
+          </div>
+        )}
         {/* The one next step on this screen: the next thing to practise, or a new paper when nothing is left. */}
         <div className="row" style={{ marginTop: 16 }}>
           {nextIdea ? (
@@ -200,16 +262,32 @@ export default function Results({ paper, onChange }: { paper: PaperView; onChang
             </div>
           </details>
         )}
-        {checkList.length > 0 && (
+        {(checkList.length > 0 || canAddKey) && (
           <details className="quiet">
-            <summary>For a parent: check {checkList.length === 1 ? "this answer" : `these ${checkList.length} answers`} against the book</summary>
+            <summary>
+              {checkList.length > 0
+                ? `For a parent: check ${checkList.length === 1 ? "this answer" : `these ${checkList.length} answers`} against the book`
+                : "For a parent: add the answer key"}
+            </summary>
             <div className="inner stack">
-              <p className="muted">
-                These are answers the AI worked out itself, or could not settle. Tap the answer your book gives. The book always wins, and the question is counted from then on.
-              </p>
+              {checkList.length > 0 && (
+                <p className="muted">
+                  These are answers the AI worked out itself, could not settle, or reused from an earlier paper. Tap the answer your book gives. The book always wins, and the question is counted from then on.
+                </p>
+              )}
+              {(keyMsg ?? paper.keyNote) && <p className="muted">{keyMsg ?? paper.keyNote}</p>}
+              {canAddKey && (
+                <p className="muted">
+                  Have the answer key?{" "}
+                  <button type="button" className="linkbtn" onClick={() => keyInput.current?.click()} aria-busy={keyBusy}>
+                    {keyBusy ? "Reading it…" : "Add a photo of it"}
+                  </button>
+                  <input ref={keyInput} type="file" accept="application/pdf,image/jpeg,image/png,image/webp" multiple hidden onChange={(e) => addKey(e.target.files)} />
+                </p>
+              )}
               {checkList.map((q) => (
                 <div key={q.n}>
-                  <Line q={q} paper={paper} note={`${q.verdict === "unsure" ? "We could not work out the answer." : `Our answer: ${q.correct}.`} He chose ${paper.answers[String(q.n)] || "nothing"}.`} />
+                  <Line q={q} paper={paper} note={`${q.fromBank ? `Saved answer, from "${q.bankFrom}". ` : ""}${q.verdict === "unsure" ? q.why ?? "We could not work out the answer." : `${q.fromBank ? "Answer" : "Our answer"}: ${q.correct}.`} He chose ${paper.answers[String(q.n)] || "nothing"}.`} />
                   <div className="row" style={{ marginTop: 6, gap: 8 }}>
                     <span className="muted tiny">Book says:</span>
                     {q.options.map((o) => (

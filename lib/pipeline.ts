@@ -2,7 +2,9 @@ import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
 import { askJson, RefusalError, StepError } from "./claude";
 import { norm } from "./grade";
-import { pageOf } from "./pages";
+import { pageOf, pagesOf } from "./pages";
+import { bothSplit, combinedParts, matchKeyPage } from "./keycore";
+import { lookupBank, mayFeedBank, saveToBank } from "./bank";
 import { mergeSameQuestion } from "./merge";
 import { appUrl, INTERNAL_HEADER, internalToken } from "./auth";
 import { STALE_MS, listPapers, loadPaper, readUpload, updatePaper, updatePaperIf, type Idea, type KeyEntry, type MistakeNote, type Paper, type Question, type StepName } from "./store";
@@ -249,6 +251,26 @@ async function readPaper(paper: Paper) {
     }
   });
 
+  // An answer key page added at upload is read now, before anything is spent on solving.
+  if (paper.keyFiles?.length) {
+    try {
+      await applyKeyPage(paper.id);
+    } catch (error) {
+      console.error(`[paper ${paper.id}] could not read the key page`, error);
+      await updatePaper(paper.id, (p) => {
+        p.keyNote = "We could not read the answer key page. Add it again from the parent section, or carry on without it.";
+      });
+    }
+  }
+  // A key printed on the paper is vouched for, so its answers are saved for repeated questions.
+  if (Object.keys(printedKey).length > 0) {
+    try {
+      await saveToBank({ ...paper, questions }, printedKey, 1);
+    } catch (error) {
+      console.error(`[paper ${paper.id}] could not save printed answers`, error);
+    }
+  }
+
   // Every paper gets a second, marks-only look (about 1.5 cents). Where the two looks give different marks the
   // student is asked; where one finds a mark and the other does not, the mark is kept. First found on 14 Nov 2026:
   // the same marked paper came back with 10, 11, 11, then 0 marks on four reads.
@@ -260,6 +282,72 @@ async function readPaper(paper: Paper) {
       console.error(`[paper ${paper.id}] second look for marks failed`, error);
     }
   }
+}
+
+// ---------- answer key page (optional, added by a parent) ----------
+
+const KeyPageSchema = z.object({ answers: z.array(z.object({ n: z.number(), answer: z.string() })) });
+
+// Reads the key page(s) and lays the answers onto the paper's questions. Key-page answers outrank every AI answer
+// and are never shown to the solving calls. A book answer a parent entered is never overwritten.
+// Returns a plain sentence saying how many questions matched.
+export async function applyKeyPage(id: string): Promise<string> {
+  const paper = await loadPaper(id);
+  if (!paper?.questions) throw new StepError("This paper is still being read.");
+  if (!paper.keyFiles?.length) throw new StepError("There is no answer key page on this paper yet.");
+  const blocks: Content = await Promise.all(
+    paper.keyFiles.map(async (f) => {
+      const data = (await readUpload(paper.id, f.stored)).toString("base64");
+      return f.mime === "application/pdf"
+        ? ({ type: "document", source: { type: "base64", media_type: "application/pdf", data } } as const)
+        : ({ type: "image", source: { type: "base64", media_type: f.mime as "image/jpeg" | "image/png" | "image/webp", data } } as const);
+    })
+  );
+  const out = await askJson({
+    paperId: id,
+    job: "read",
+    step: "read-key",
+    schema: KeyPageSchema,
+    effort: "low",
+    content: [
+      ...blocks,
+      {
+        type: "text",
+        text: `This is the answer key for a school test paper (photos or a PDF). List every question number with its answer exactly as printed, as the option label without brackets ("1", "2" or "A", "B"). Skip any entry you cannot read. Do not solve anything and do not guess.`,
+      },
+    ],
+  });
+  const m = matchKeyPage(paper.questions, out.answers);
+  const sentence =
+    m.matched === 0
+      ? "We could not match any answers on that key page to this paper's questions. Check that it is the right key and the photo is clear."
+      : `Matched ${m.matched} of ${m.total} questions to the answer key.`;
+  const after = await updatePaper(id, (p) => {
+    p.keyNote = sentence;
+    p.printedKey = { ...(p.printedKey ?? {}) };
+    for (const [n, label] of Object.entries(m.labels)) {
+      p.printedKey[n] = label;
+      if (p.key) {
+        if (p.key[n]?.book) continue;
+        p.key[n] = { answer: label, source: "printed", keyPage: true };
+        const note = p.notes?.find((x) => x.n === Number(n));
+        if (note) {
+          delete note.disputed;
+          note.aiAnswer = null;
+        }
+      }
+    }
+    // Late key: grading already changes by itself; regrouping costs money, so only offer it.
+    if (m.matched > 0 && p.analysed) p.regroupOffer = true;
+  });
+  if (m.matched > 0 && mayFeedBank(after)) {
+    try {
+      await saveToBank(after, m.labels, 2);
+    } catch (error) {
+      console.error(`[paper ${id}] could not save key page answers`, error);
+    }
+  }
+  return sentence;
 }
 
 const MarksSchema = z.object({ marks: z.array(z.object({ n: z.number(), answer: z.string() })) });
@@ -373,12 +461,22 @@ async function solvePaper(paper: Paper) {
   const questions = paper.questions ?? [];
   const mcq = questions.filter((q) => q.type === "mcq");
   const printed = paper.printedKey ?? {};
-  const toSolve = mcq.filter((q) => !printed[String(q.n)]);
-
   const key: Record<string, KeyEntry> = {};
   for (const q of mcq) {
-    if (printed[String(q.n)]) key[String(q.n)] = { answer: printed[String(q.n)], source: "printed" };
+    if (printed[String(q.n)]) key[String(q.n)] = { answer: printed[String(q.n)], source: "printed", ...(paper.keyFiles?.length ? { keyPage: true } : {}) };
   }
+  // Answers a person or a key vouched for on an earlier paper are reused before any AI is paid for.
+  const needing = mcq.filter((q) => !printed[String(q.n)]);
+  try {
+    const saved = await lookupBank(needing);
+    for (const q of needing) {
+      const hit = saved.get(q.n);
+      if (hit) key[String(q.n)] = { answer: hit.label, source: "printed", bank: true, bankFrom: hit.from };
+    }
+  } catch (error) {
+    console.error(`[paper ${paper.id}] saved answers could not be looked up`, error);
+  }
+  const toSolve = mcq.filter((q) => !key[String(q.n)]);
 
   if (toSolve.length > 0) {
     const chunks: Question[][] = [];
@@ -438,7 +536,12 @@ async function solvePaper(paper: Paper) {
     for (const q of toSolve) {
       const a = found.a.get(q.n);
       const b = found.b.get(q.n);
-      key[String(q.n)] = a && a === b ? { answer: a, source: "solved" } : { answer: null, source: "unsure" };
+      key[String(q.n)] =
+        a && a === b
+          ? { answer: a, source: "solved" }
+          : a && b && bothSplit(q, a, b)
+            ? { answer: null, source: "unsure", why: "Two answers can both be argued here, so it is not counted." }
+            : { answer: null, source: "unsure" };
     }
   }
 
@@ -477,7 +580,17 @@ async function recheckPaper(paper: Paper) {
 
   let spent = 0;
   if (candidates.length > 0) {
-    const blocks = await paperBlocks(paper);
+    // Only the pages the questions sit on (and the next page when a question is cut off), not the whole paper.
+    // If a page cannot be cut out, the whole paper is sent instead.
+    let blocks: Content;
+    try {
+      const pages = [...new Set(candidates.flatMap((q) => (q.cutOff ? [q.page, q.page + 1] : [q.page])))];
+      blocks = await pagesOf(paper, pages);
+      if (blocks.length === 0) blocks = await paperBlocks(paper);
+    } catch (error) {
+      console.error(`[paper ${paper.id}] could not cut out pages for the re-check; sending the whole paper`, error);
+      blocks = await paperBlocks(paper);
+    }
     const solve = async (qs: Question[], approach: string, name: string) => {
       const got = new Map<number, string>();
       try {
@@ -620,22 +733,6 @@ const AnalyseSchema = z.object({
   ideas: z.array(z.object({ name: z.string(), explain: z.string(), questions: z.array(z.number()) })),
 });
 
-// "Both (1) & (2)" or "All of the above": the labels of the options it stands for. null for an ordinary option.
-function combinedParts(q: Question, label: string): string[] | null {
-  const option = q.options.find((o) => o.label === label);
-  if (!option) return null;
-  const others = q.options.filter((o) => o.label !== label).map((o) => o.label);
-  if (/\b(all|each)\s+of\s+(the\s+)?(above|these)\b/i.test(option.text)) return others;
-  // Only "Both ..." counts. A bare "(1) and (2)" may be pointing at numbered statements, not at options.
-  if (!/\bboth\b/i.test(option.text)) return null;
-  const named = new Set<string>();
-  for (const m of option.text.matchAll(/\(\s*([a-z0-9]{1,3})\s*\)|\b([a-d]|[1-9])\b/gi)) {
-    const l = norm(m[1] ?? m[2]);
-    if (others.includes(l)) named.add(l);
-  }
-  return named.size >= 2 ? [...named] : null;
-}
-
 const AlsoRightSchema = z.object({ accepted: z.boolean() });
 
 // With no printed key, "we say (1), the student said Both (1) and (2)" is the case where our own answer is
@@ -688,7 +785,10 @@ accepted: would school textbooks and coaching material at this class level accep
 // gave the student's choice back for all three wrong questions, so every mistake on the paper was thrown out.
 async function ownAnswers(paper: Paper, wrong: Question[]): Promise<Map<number, string>> {
   const own = new Map<number, string>();
-  const printed = wrong.filter((q) => paper.key?.[String(q.n)]?.source === "printed");
+  const printed = wrong.filter((q) => {
+    const e = paper.key?.[String(q.n)];
+    return e?.source === "printed" && !e.book && !e.keyPage && !e.bank;
+  });
   // Where the key is our own two agreeing solves, that is already the AI's answer.
   for (const q of wrong) {
     const entry = paper.key?.[String(q.n)];

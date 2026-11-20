@@ -15,6 +15,16 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [staged, setStaged] = useState<Staged[]>([]);
   const [note, setNote] = useState<string | null>(null);
+  // An optional answer key (photos or a PDF). Chosen before the paper, it goes up with it.
+  const keyInput = useRef<HTMLInputElement>(null);
+  const [keyFiles, setKeyFiles] = useState<File[]>([]);
+
+  async function chooseKey(chosen: FileList | null) {
+    if (!chosen || chosen.length === 0) return;
+    const list = Array.from(chosen).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    setKeyFiles(await Promise.all(list.map(shrink)));
+    if (keyInput.current) keyInput.current.value = "";
+  }
 
   useEffect(() => {
     fetch("/api/papers")
@@ -77,9 +87,10 @@ export default function Home() {
     setBusy(true);
     setError(null);
     const meta = files.map((f) => ({ name: f.name, type: f.type, size: f.size }));
+    const keyMeta = keyFiles.map((f) => ({ name: f.name, type: f.type, size: f.size }));
     try {
       const hash = await fingerprint(files);
-      const prep = await fetch("/api/papers/prepare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ files: meta, hash }) });
+      const prep = await fetch("/api/papers/prepare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ files: meta, keyFiles: keyMeta, hash }) });
       const ready = await prep.json();
       if (!prep.ok) throw new Error(ready.error ?? "The upload did not go through. Try again.");
       if (!ready.existing) {
@@ -89,7 +100,13 @@ export default function Home() {
             if (!put.ok) throw new Error("A page did not finish uploading. Check your connection and try again.");
           })
         );
-        const res = await fetch("/api/papers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: ready.id, files: meta, hash }) });
+        await Promise.all(
+          ((ready.keyUploads ?? []) as { url: string }[]).map(async (u, i) => {
+            const put = await fetch(u.url, { method: "PUT", headers: { "Content-Type": keyFiles[i].type, "x-upsert": "true" }, body: keyFiles[i] });
+            if (!put.ok) throw new Error("The answer key did not finish uploading. Check your connection and try again.");
+          })
+        );
+        const res = await fetch("/api/papers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: ready.id, files: meta, keyFiles: keyMeta, hash }) });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "The upload did not go through. Try again.");
       }
@@ -132,6 +149,21 @@ export default function Home() {
         <span className="fake" aria-busy={busy}>{busy ? "Working on it…" : staged.length > 0 ? "Add more pages" : "Choose your paper"}</span>
         <span className="muted tiny">or drop it here. For photos, pick the pages together, or add them in rounds.</span>
       </label>
+
+      <p className="muted tiny" style={{ marginTop: -12 }}>
+        {keyFiles.length > 0 ? (
+          <>
+            Answer key added ({keyFiles.length} {keyFiles.length === 1 ? "file" : "files"}).{" "}
+            <button type="button" className="linkbtn" style={{ fontSize: 13 }} onClick={() => setKeyFiles([])}>Remove</button>
+          </>
+        ) : (
+          <>
+            Have the answer key?{" "}
+            <button type="button" className="linkbtn" style={{ fontSize: 13 }} onClick={() => keyInput.current?.click()}>Add a photo of it</button>
+          </>
+        )}
+        <input ref={keyInput} type="file" accept="application/pdf,image/jpeg,image/png,image/webp" multiple hidden onChange={(e) => chooseKey(e.target.files)} />
+      </p>
 
       {note && <p className="muted tiny">{note}</p>}
 

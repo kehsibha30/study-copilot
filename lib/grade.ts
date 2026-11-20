@@ -16,7 +16,7 @@ export function verdict(paper: Paper, q: Question): Verdict {
   if (!entry || entry.source === "unsure" || !entry.answer) return "unsure";
   // If the AI's own solution disagrees with the printed key, do not count the question.
   const note = paper.notes?.find((x) => x.n === q.n);
-  if (entry.source === "printed" && note?.aiAnswer && norm(note.aiAnswer) !== norm(entry.answer)) {
+  if (entry.source === "printed" && !entry.keyPage && !entry.bank && note?.aiAnswer && norm(note.aiAnswer) !== norm(entry.answer)) {
     return "unsure";
   }
   // No printed key, and the student's choice could also be the book's answer: do not mark it wrong.

@@ -27,3 +27,15 @@ export function checkFiles(files: FileMeta[]): string | null {
   if (ok.reduce((sum, f) => sum + f.size, 0) > MAX_TOTAL_BYTES) return "That is over 20 MB. Upload fewer pages at a time.";
   return null;
 }
+
+export const MAX_KEY_FILES = 6;
+
+export function keyStoredName(i: number, type: string) {
+  return `key-${i + 1}.${ALLOWED[type]}`;
+}
+
+// The answer key photos or PDF. Same rules as the paper, but fewer pages.
+export function checkKeyFiles(files: FileMeta[]): string | null {
+  if (files.length > MAX_KEY_FILES) return `That is more than ${MAX_KEY_FILES} pages for the answer key.`;
+  return checkFiles(files);
+}

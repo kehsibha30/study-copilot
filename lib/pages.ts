@@ -31,3 +31,28 @@ export async function pageOf(paper: Paper, q: Question): Promise<Content> {
   const data = (await readUpload(paper.id, file.stored)).toString("base64");
   return [{ type: "image", source: { type: "base64", media_type: file.mime as "image/jpeg" | "image/png" | "image/webp", data } }];
 }
+
+// Several whole pages of the paper (page numbers count from 1), as one block for photos or one cut-down PDF.
+// Page numbers outside the paper are ignored. Returns nothing if no page is left.
+export async function pagesOf(paper: Paper, pageNumbers: number[]): Promise<Content> {
+  const first = paper.files[0];
+  if (!first) return [];
+  const wanted = [...new Set(pageNumbers)].filter((n) => n >= 1).sort((a, b) => a - b);
+  if (first.mime === "application/pdf") {
+    const bytes = await readUpload(paper.id, first.stored);
+    const src = await PDFDocument.load(bytes);
+    const index = wanted.map((n) => n - 1).filter((i) => i < src.getPageCount());
+    if (index.length === 0) return [];
+    const out = await PDFDocument.create();
+    for (const page of await out.copyPages(src, index)) out.addPage(page);
+    return [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: Buffer.from(await out.save()).toString("base64") } }];
+  }
+  const blocks: Content = [];
+  for (const n of wanted) {
+    const file = paper.files[n - 1];
+    if (!file) continue;
+    const data = (await readUpload(paper.id, file.stored)).toString("base64");
+    blocks.push({ type: "image", source: { type: "base64", media_type: file.mime as "image/jpeg" | "image/png" | "image/webp", data } });
+  }
+  return blocks;
+}

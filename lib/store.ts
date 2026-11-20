@@ -31,6 +31,13 @@ export type KeyEntry = {
   source: "printed" | "solved" | "best" | "unsure";
   // A parent entered this from the book. Outranks every other answer.
   book?: boolean;
+  // Read from an answer key page the parent added. Outranks every AI answer; skips the AI cross-check.
+  keyPage?: boolean;
+  // Reused from an earlier paper (saved answers). bankFrom: the title of the paper it came from.
+  bank?: boolean;
+  bankFrom?: string;
+  // Why the answer is in doubt, in plain words (shown to the parent).
+  why?: string;
 };
 
 export type MistakeNote = {
@@ -104,6 +111,12 @@ export type Paper = {
 
   questions?: Question[];
   printedKey?: Record<string, string>;
+  // Photos or a PDF of the answer key, added at upload or later. Stored beside the paper's pages.
+  keyFiles?: { name: string; mime: string; stored: string }[];
+  // What happened when the key page was read, in plain words.
+  keyNote?: string;
+  // A key page was added after the mistakes were grouped. Offer to regroup (costs money, so ask first).
+  regroupOffer?: boolean;
   pageProblems?: { page: number; problem: string }[];
   // How many times the paper has been looked at only for the student's own marks (after a read that found none).
   marksLooks?: number;
