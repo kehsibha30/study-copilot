@@ -185,7 +185,7 @@ export default function Results({ paper, onChange }: { paper: PaperView; onChang
             <p>
               {paper.hasPrintedKey
                 ? "Your answers were compared with the answer key printed on the paper."
-                : "This paper has no answer key, so the AI solved every question twice, in two different ways. A question counts only when both solutions agree."}{" "}
+                : "This paper has no answer key, so the AI solved every question twice, in two different ways. A question counts only when both solutions agree. Where your answer and ours differ, a stronger AI looks again, and any answer it gives is marked Our best answer."}{" "}
               The AI can still be wrong. If an answer looks wrong to you, say so and it will be left out.
             </p>
             <p>AI cost for this paper: ${paper.costUsd.toFixed(2)}</p>
@@ -263,10 +263,11 @@ function Mistake({ q, paper, onReport }: { q: QuestionView; paper: PaperView; on
             <span>{o.label}.</span>
             <span>{o.text}</span>
             {isMine && <span className="tag">You chose this</span>}
-            {isRight && <span className="tag">Right answer</span>}
+            {isRight && <span className="tag">{q.keySource === "best" ? "Our best answer" : "Right answer"}</span>}
           </div>
         );
       })}
+      {q.keySource === "best" && <p className="muted tiny" style={{ marginTop: 6 }}>Our best answer, worked out by the AI, not taken from your book. If your book says something else, tap &ldquo;This looks wrong&rdquo;.</p>}
       {q.whyTempting && <p className="why">Why {mine} looks right: {q.whyTempting}</p>}
       <p style={{ marginTop: 8 }}>
         <button className="linkbtn" onClick={onReport}>This looks wrong</button>

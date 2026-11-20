@@ -20,7 +20,7 @@ export function verdict(paper: Paper, q: Question): Verdict {
     return "unsure";
   }
   // No printed key, and the student's choice could also be the book's answer: do not mark it wrong.
-  if (entry.source === "solved" && note?.disputed) return "unsure";
+  if ((entry.source === "solved" || entry.source === "best") && note?.disputed) return "unsure";
   const mine = norm(paper.answers[String(q.n)]);
   if (!mine) return "skipped";
   return mine === norm(entry.answer) ? "correct" : "wrong";

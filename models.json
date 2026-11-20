@@ -4,5 +4,6 @@
   "analyse": "claude-sonnet-5-5",
   "lesson": "claude-sonnet-5-5",
   "verify": "claude-sonnet-5-5",
-  "doubt": "claude-sonnet-5-5"
+  "doubt": "claude-sonnet-5-5",
+  "recheck": "claude-sonnet-5-5"
 }

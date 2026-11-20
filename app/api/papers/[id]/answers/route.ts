@@ -35,6 +35,8 @@ export async function POST(request: Request, ctx: RouteContext<"/api/papers/[id]
     p.answers = clean;
     if (body.submit) {
       p.answersSubmitted = true;
+      // Checking the paper means carrying on with the pages as they are.
+      if (p.qualityHold === "waiting") p.qualityHold = "cleared";
       queueNext(p);
     }
   });

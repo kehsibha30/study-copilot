@@ -15,6 +15,8 @@ export type Question = {
   page: number;
   markedAnswer: string | null;
   cutOff: boolean;
+  // Two reads of the paper found different marks here, so the student is asked to pick (see crossCheckMarks).
+  markDoubt?: boolean;
   // Added by the tagging step, so results can be grouped by subject and topic across papers.
   subject?: string;
   topic?: string;
@@ -24,8 +26,9 @@ export type KeyEntry = {
   answer: string | null;
   // printed: taken from the paper's own answer key.
   // solved: two independent AI solves agreed.
-  // unsure: the two solves disagreed, or neither found an answer. Not counted.
-  source: "printed" | "solved" | "unsure";
+  // best: the cheap pair was doubtful and two strong solves agreed (decision 20 Nov 2026). Our best answer, not from a book.
+  // unsure: the solves disagreed, or neither found an answer. Not counted.
+  source: "printed" | "solved" | "best" | "unsure";
 };
 
 export type MistakeNote = {
@@ -39,7 +42,7 @@ export type MistakeNote = {
 
 export type Idea = { name: string; explain: string; questions: number[] };
 
-export type StepName = "read" | "solve" | "tag" | "analyse";
+export type StepName = "read" | "solve" | "recheck" | "tag" | "analyse";
 
 // ---- stage 2: fixing one idea ----
 
@@ -102,6 +105,10 @@ export type Paper = {
   pageProblems?: { page: number; problem: string }[];
   // How many times the paper has been looked at only for the student's own marks (after a read that found none).
   marksLooks?: number;
+  // "waiting": the pages look poor, so nothing is spent solving until the student chooses to carry on.
+  qualityHold?: "waiting" | "cleared";
+  // The strong re-check of doubtful answers has run (or was not needed).
+  rechecked?: boolean;
 
   answers: Record<string, string>;
   answersSubmitted: boolean;

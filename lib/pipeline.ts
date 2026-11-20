@@ -28,7 +28,10 @@ export function queueNext(p: Paper) {
 
 export function nextStep(p: Paper): StepName | null {
   if (!p.questions) return "read";
-  if (!p.key) return "solve";
+  // Poor pages: nothing is spent on solving until the student chooses to carry on (submitting also carries on).
+  if (!p.key) return p.qualityHold === "waiting" ? null : "solve";
+  // The strong re-check only runs once the student's answers are in, so it looks only at questions that matter.
+  if (p.answersSubmitted && !p.rechecked && !p.analysed) return "recheck";
   // Tagging runs just before the mistakes are grouped, so a paper nobody finishes costs nothing extra.
   if (p.answersSubmitted && !p.analysed) return p.tagged ? "analyse" : "tag";
   return null;
@@ -37,6 +40,7 @@ export function nextStep(p: Paper): StepName | null {
 const LABELS: Record<StepName, string> = {
   read: "Reading your paper and finding the questions",
   solve: "Working out the answers",
+  recheck: "Double-checking the answers we were unsure about",
   tag: "Sorting the questions by subject and topic",
   analyse: "Grouping your mistakes by idea",
 };
@@ -59,6 +63,7 @@ export async function advance(id: string): Promise<void> {
   try {
     if (current === "read") await readPaper(claimed);
     else if (current === "solve") await solvePaper(claimed);
+    else if (current === "recheck") await recheckPaper(claimed);
     else if (current === "tag") await tagPaper(claimed);
     else await analysePaper(claimed);
   } catch (error) {
@@ -234,19 +239,24 @@ async function readPaper(paper: Paper) {
     p.questions = questions;
     p.printedKey = printedKey;
     p.pageProblems = out.page_problems;
+    // Decision 20 Nov 2026: a page the reader says it cannot read, or several cut-off questions, pauses the paid
+    // solving until the student chooses to carry on (or uploads clearer photos).
+    const cutCount = questions.filter((q) => q.cutOff).length;
+    if (out.page_problems.length > 0 || cutCount >= 3) p.qualityHold = "waiting";
     // Answers found on the paper are filled in for the student to check.
     for (const q of questions) {
       if (q.markedAnswer && !p.answers[String(q.n)]) p.answers[String(q.n)] = q.markedAnswer;
     }
   });
 
-  // The same marked paper has come back with no marks at all (14 Nov 2026: 10, 11, 11, then 0 on four reads of
-  // one file). So a read that finds none is followed by one look that does nothing but find the marks.
-  if (!questions.some((q) => q.markedAnswer) && questions.some((q) => q.type === "mcq")) {
+  // Every paper gets a second, marks-only look (about 1.5 cents). Where the two looks give different marks the
+  // student is asked; where one finds a mark and the other does not, the mark is kept. First found on 14 Nov 2026:
+  // the same marked paper came back with 10, 11, 11, then 0 marks on four reads.
+  if (questions.some((q) => q.type === "mcq")) {
     try {
-      await lookForMarks(paper.id);
+      await crossCheckMarks(paper.id);
     } catch (error) {
-      // The paper is read; a failed second look only means the student taps the answers in.
+      // The paper is read; a failed second look only means less cross-checking.
       console.error(`[paper ${paper.id}] second look for marks failed`, error);
     }
   }
@@ -254,18 +264,10 @@ async function readPaper(paper: Paper) {
 
 const MarksSchema = z.object({ marks: z.array(z.object({ n: z.number(), answer: z.string() })) });
 
-// Looks at the paper only for the student's own marks, and fills in the ones found where no answer is chosen yet.
-// Returns how many it found. Never solves a question.
-export async function lookForMarks(id: string): Promise<number> {
-  const paper = await loadPaper(id);
-  if (!paper?.questions) throw new StepError("This paper is still being read.");
-  if (paper.answersSubmitted) return 0;
-  await updatePaper(id, (p) => {
-    p.marksLooks = (p.marksLooks ?? 0) + 1;
-  });
-  const mcq = paper.questions.filter((q) => q.type === "mcq");
+async function askMarks(paper: Paper): Promise<Map<number, string>> {
+  const mcq = (paper.questions ?? []).filter((q) => q.type === "mcq");
   const out = await askJson({
-    paperId: id,
+    paperId: paper.id,
     job: "read",
     step: "read-marks",
     schema: MarksSchema,
@@ -284,18 +286,63 @@ Leave out every question with no mark, with more than one option marked, or wher
       },
     ],
   });
+  const found = new Map<number, string>();
+  for (const m of out.marks) {
+    const q = mcq.find((x) => x.n === m.n);
+    const label = norm(m.answer);
+    if (q && q.options.some((o) => o.label === label)) found.set(q.n, label);
+  }
+  return found;
+}
+
+// Looks at the paper only for the student's own marks, and fills in the ones found where no answer is chosen yet.
+// Returns how many it found. Never solves a question. (The "Look again" button.)
+export async function lookForMarks(id: string): Promise<number> {
+  const paper = await loadPaper(id);
+  if (!paper?.questions) throw new StepError("This paper is still being read.");
+  if (paper.answersSubmitted) return 0;
+  await updatePaper(id, (p) => {
+    p.marksLooks = (p.marksLooks ?? 0) + 1;
+  });
+  const marks = await askMarks(paper);
   let found = 0;
   await updatePaper(id, (p) => {
-    for (const m of out.marks) {
-      const q = p.questions?.find((x) => x.n === m.n);
-      const label = norm(m.answer);
-      if (!q || q.type !== "mcq" || !q.options.some((o) => o.label === label)) continue;
+    for (const [n, label] of marks) {
+      const q = p.questions?.find((x) => x.n === n);
+      if (!q) continue;
       q.markedAnswer = label;
       found++;
       if (!p.answersSubmitted && !p.answers[String(q.n)]) p.answers[String(q.n)] = label;
     }
   });
   return found;
+}
+
+// The second look made on every paper. Compares it with the first read:
+// - same mark, or only one look found a mark: kept (a mark found once is used; the student checks the grid anyway)
+// - two different marks: the answer is cleared and the question is flagged, so the student picks.
+async function crossCheckMarks(id: string): Promise<void> {
+  const paper = await loadPaper(id);
+  if (!paper?.questions || paper.answersSubmitted) return;
+  await updatePaper(id, (p) => {
+    p.marksLooks = (p.marksLooks ?? 0) + 1;
+  });
+  const second = await askMarks(paper);
+  await updatePaper(id, (p) => {
+    for (const q of p.questions ?? []) {
+      if (q.type !== "mcq") continue;
+      const other = second.get(q.n);
+      if (!other) continue;
+      if (!q.markedAnswer) {
+        q.markedAnswer = other;
+        if (!p.answers[String(q.n)]) p.answers[String(q.n)] = other;
+      } else if (q.markedAnswer !== other) {
+        if (p.answers[String(q.n)] === q.markedAnswer) delete p.answers[String(q.n)];
+        q.markedAnswer = null;
+        q.markDoubt = true;
+      }
+    }
+  });
 }
 
 // ---------- step 2: answer key (printed if the paper has one, otherwise solved twice) ----------
@@ -308,11 +355,11 @@ const SolveSchema = z.object({
 const SOLVE_A = "Work out your own answer to each one first, then find the option that matches it.";
 const SOLVE_B = "For each one, test every option against the question and rule out the ones that cannot be right.";
 
-function solvePrompt(qs: Question[], approach: string) {
+function solvePrompt(qs: Question[], approach: string, extra = "") {
   return `Using the paper above, work out the correct option for these questions: ${qs.map((q) => q.n).join(", ")}.
 
 ${approach}
-Read any figure from the page itself.
+Read any figure from the page itself.${extra}
 The pages may carry a student's own ticks, circles or highlighter. Those are the student's answers and may be wrong. Take no account of them.
 
 For each question give:
@@ -397,6 +444,92 @@ async function solvePaper(paper: Paper) {
 
   await updatePaper(paper.id, (p) => {
     p.key = key;
+  });
+}
+
+// ---------- step 2b: strong re-check of the answers that matter and are doubtful ----------
+// Decision 20 Nov 2026. The cheap pair (Haiku, twice) can agree on a wrong answer: on one paper it did so for
+// question 15 (a candle in front of a thick mirror) and question 4 (a picture option). So once the student's
+// answers are in, only the questions where it matters are solved again by the stronger model:
+//   - no answer was found by the cheap pair, or
+//   - the student's answer differs from the cheap key.
+// A question changes only when two strong solves (different approaches) agree; otherwise it stays "not counted".
+// Hard cap on spend per paper, so a bad paper cannot run away. Printed keys are never touched here.
+
+const RECHECK_CAP_USD = 0.25;
+const RECHECK_MAX_QUESTIONS = 12;
+const RECHECK_EXTRA = "\nOptions may be drawn as pictures (flipped, mirrored or rotated text and shapes). Read those from the page itself, and check each one carefully.";
+
+async function recheckPaper(paper: Paper) {
+  const key: Record<string, KeyEntry> = { ...(paper.key ?? {}) };
+  const candidates = (paper.questions ?? [])
+    .filter((q) => {
+      if (q.type !== "mcq" || q.options.length < 2 || paper.reported.includes(q.n)) return false;
+      const entry = key[String(q.n)];
+      if (entry?.source === "printed") return false;
+      const mine = norm(paper.answers[String(q.n)]);
+      if (!mine) return false;
+      return !entry?.answer || norm(entry.answer) !== mine;
+    })
+    // Questions with no answer at all first, then the ones where the student and the cheap key differ.
+    .sort((a, b) => Number(Boolean(key[String(a.n)]?.answer)) - Number(Boolean(key[String(b.n)]?.answer)))
+    .slice(0, RECHECK_MAX_QUESTIONS);
+
+  let spent = 0;
+  if (candidates.length > 0) {
+    const blocks = await paperBlocks(paper);
+    const solve = async (qs: Question[], approach: string, name: string) => {
+      const got = new Map<number, string>();
+      try {
+        const out = await askJson({
+          paperId: paper.id,
+          job: "recheck",
+          step: name,
+          schema: SolveSchema,
+          effort: "high",
+          content: [...blocks, { type: "text", text: solvePrompt(qs, approach, RECHECK_EXTRA) }],
+          onCost: (usd) => {
+            spent += usd;
+          },
+        });
+        for (const a of out.answers) {
+          const label = norm(a.answer);
+          const q = qs.find((x) => x.n === a.n);
+          if (q && q.options.some((o) => o.label === label)) got.set(q.n, label);
+        }
+      } catch (error) {
+        // Declined: those questions keep what the cheap pair gave.
+        if (!(error instanceof RefusalError)) throw error;
+        console.error(`[paper ${paper.id}] ${name} declined (${error.category ?? "no category"})`);
+      }
+      return got;
+    };
+    const addCost = async () =>
+      await updatePaper(paper.id, (p) => {
+        p.cost.usd = Number((p.cost.usd + spent).toFixed(5));
+        p.cost.calls += 1;
+      });
+
+    const a = await solve(candidates, SOLVE_A, "recheck-a");
+    await addCost();
+    const before = spent;
+    spent = 0;
+    // Only the ones where the strong answer differs from the cheap key (or the cheap pair had none) need a second strong solve.
+    const differ = candidates.filter((q) => a.has(q.n) && a.get(q.n) !== norm(key[String(q.n)]?.answer));
+    let b = new Map<number, string>();
+    if (differ.length > 0 && before < RECHECK_CAP_USD) {
+      b = await solve(differ, SOLVE_B, "recheck-b");
+      await addCost();
+    }
+    for (const q of differ) {
+      const answer = a.get(q.n)!;
+      key[String(q.n)] = b.get(q.n) === answer ? { answer, source: "best" } : { answer: null, source: "unsure" };
+    }
+  }
+
+  await updatePaper(paper.id, (p) => {
+    p.key = key;
+    p.rechecked = true;
   });
 }
 
@@ -511,7 +644,7 @@ const AlsoRightSchema = z.object({ accepted: z.boolean() });
 // Found on 14 Nov 2026: "reversible change" against "both reversible and physical", which a printed key accepts.
 async function studentChoiceAlsoRight(paper: Paper, q: Question): Promise<boolean> {
   const entry = paper.key?.[String(q.n)];
-  if (entry?.source !== "solved" || !entry.answer) return false;
+  if ((entry?.source !== "solved" && entry?.source !== "best") || !entry.answer) return false;
   const parts = combinedParts(q, norm(paper.answers[String(q.n)]));
   const ours = norm(entry.answer);
   if (!parts || !parts.includes(ours)) return false;
@@ -559,7 +692,7 @@ async function ownAnswers(paper: Paper, wrong: Question[]): Promise<Map<number, 
   // Where the key is our own two agreeing solves, that is already the AI's answer.
   for (const q of wrong) {
     const entry = paper.key?.[String(q.n)];
-    if (entry?.source === "solved" && entry.answer) own.set(q.n, norm(entry.answer));
+    if ((entry?.source === "solved" || entry?.source === "best") && entry.answer) own.set(q.n, norm(entry.answer));
   }
   for (let i = 0; i < printed.length; i += 20) {
     const qs = printed.slice(i, i + 20);
@@ -662,7 +795,7 @@ ${earlier.length ? `Idea names already used on this student's earlier papers:\n$
       whyTempting: m.why_tempting.trim(),
       aiAnswer: own.get(m.n) ?? null,
       // A printed key always decides. Only an answer we worked out ourselves can be put in doubt this way.
-      ...(m.also_acceptable && paper.key?.[String(m.n)]?.source === "solved" ? { disputed: true } : {}),
+      ...(m.also_acceptable && ["solved", "best"].includes(paper.key?.[String(m.n)]?.source ?? "") ? { disputed: true } : {}),
     }));
 
   const placed = new Set<number>();

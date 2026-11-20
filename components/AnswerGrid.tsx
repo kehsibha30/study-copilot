@@ -34,10 +34,28 @@ export default function AnswerGrid({ paper, onChange }: { paper: PaperView; onCh
     }
   }
 
+  const [carrying, setCarrying] = useState(false);
+  async function carryOn() {
+    if (carrying) return;
+    setCarrying(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/papers/${paper.id}/carry-on`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      onChange(data.paper);
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : "That did not go through. Try again.");
+    } finally {
+      setCarrying(false);
+    }
+  }
+
   const mcq = paper.questions.filter((q) => q.type === "mcq");
   const written = paper.questions.filter((q) => q.type === "written");
   const answered = mcq.filter((q) => answers[String(q.n)]).length;
   const cutOff = paper.questions.filter((q) => q.cutOff).map((q) => q.n);
+  const doubtful = mcq.filter((q) => q.markDoubt && !answers[String(q.n)]).map((q) => q.n);
 
   // Every change is saved a moment later, so leaving the page and coming back loses nothing.
   useEffect(() => {
@@ -127,6 +145,18 @@ export default function AnswerGrid({ paper, onChange }: { paper: PaperView; onCh
           <div style={{ marginTop: 6 }}>
             For a better result, <Link href="/">upload clearer photos</Link>. Or carry on with what we have.
           </div>
+          {paper.qualityHold && (
+            <div style={{ marginTop: 8 }}>
+              We have not started working out answers yet, so nothing is spent on these pages.{" "}
+              <button className="linkbtn" onClick={carryOn} aria-busy={carrying}>{carrying ? "Starting…" : "Carry on with these pages"}</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {doubtful.length > 0 && (
+        <div className="notice">
+          We read your marks twice and got different answers for {doubtful.length === 1 ? `question ${doubtful[0]}` : `questions ${doubtful.join(", ")}`}. Please tap what you chose.
         </div>
       )}
 
@@ -141,7 +171,7 @@ export default function AnswerGrid({ paper, onChange }: { paper: PaperView; onCh
             <div key={i}>
               {s.name && <div className="section-h" style={i === 0 ? { marginTop: 0 } : undefined}>{s.name}</div>}
               {s.items.map((q) => (
-                <div className="q" key={q.n}>
+                <div className="q" key={q.n} style={q.markDoubt && !answers[String(q.n)] ? { background: "var(--warn-soft)" } : undefined}>
                   <span className="num">{q.n}</span>
                   <span className="txt" title={q.text}>{q.text}</span>
                   <span className="opts" role="group" aria-label={`Question ${q.n}`}>

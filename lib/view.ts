@@ -14,10 +14,11 @@ export type QuestionView = {
   page: number;
   fileIndex: number;
   cutOff: boolean;
+  markDoubt: boolean;
   // Only present once the paper is checked:
   verdict?: Verdict;
   correct?: string | null;
-  keySource?: "printed" | "solved" | "unsure";
+  keySource?: "printed" | "solved" | "best" | "unsure";
   whyTempting?: string;
   // Not counted because the student's own choice could also be right.
   disputed?: boolean;
@@ -36,6 +37,7 @@ export type PaperView = {
   markedCount: number;
   marksLooks: number; // extra looks made only to find the student's marks
   pageProblems: { page: number; problem: string }[];
+  qualityHold: boolean;
   hasPrintedKey: boolean;
   fileCount: number;
   isPdf: boolean;
@@ -78,6 +80,7 @@ export function paperView(paper: Paper): PaperView {
       // Photos: one file per page. PDF: one file, opened at the page.
       fileIndex: isPdf ? 0 : Math.min(Math.max(q.page - 1, 0), paper.files.length - 1),
       cutOff: q.cutOff,
+      markDoubt: Boolean(q.markDoubt),
     };
     if (!done) return base;
     const entry = paper.key?.[String(q.n)];
@@ -89,7 +92,7 @@ export function paperView(paper: Paper): PaperView {
       correct: v === "unsure" ? null : entry?.answer ?? null,
       keySource: entry?.source,
       whyTempting: note?.whyTempting,
-      disputed: v === "unsure" && entry?.source === "solved" && Boolean(note?.disputed),
+      disputed: v === "unsure" && (entry?.source === "solved" || entry?.source === "best") && Boolean(note?.disputed),
     };
   });
 
@@ -125,6 +128,7 @@ export function paperView(paper: Paper): PaperView {
     markedCount: (paper.questions ?? []).filter((q) => q.markedAnswer).length,
     marksLooks: paper.marksLooks ?? 0,
     pageProblems: paper.pageProblems ?? [],
+    qualityHold: paper.qualityHold === "waiting",
     hasPrintedKey: Object.keys(paper.printedKey ?? {}).length > 0,
     fileCount: paper.files.length,
     isPdf,
