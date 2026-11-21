@@ -53,7 +53,7 @@ export default function SpeedHome() {
     <div className="stack" style={{ gap: 22 }}>
       <div>
         <h1>Speed</h1>
-        <p className="lede">Quick ways to calculate faster. Learn a shortcut, run a drill, then beat your own time.</p>
+        <p className="lede">Quick ways to calculate faster in maths and physics. Learn a shortcut, answer ten, then keep going. The questions get harder as you get them right.</p>
         <p className="muted tiny" style={{ margin: "8px 0 0" }}>
           {streak > 0 ? `${streak} ${streak === 1 ? "day" : "days"} in a row. Keep it rolling.` : "Do a drill today and your days in a row start counting."}
         </p>
@@ -67,35 +67,39 @@ export default function SpeedHome() {
       </div>
       {error && <div className="error" role="alert">{error}</div>}
 
-      <section className="stack" style={{ gap: 4 }}>
-        <h2>Your topics</h2>
-        <div className="card list" style={{ padding: "4px 18px" }}>
-          {d.calc.topics.map((t) => (
-            <Link key={t.id} href={`/speed/${t.id}`}>
-              <div className="row" style={{ justifyContent: "space-between", flexWrap: "nowrap", alignItems: "flex-start" }}>
-                <span>
-                  <span className="t">{t.label}</span>
-                  <br />
-                  <span className="muted tiny">
-                    {t.bestMs !== null
-                      ? `Best ${secs(t.bestMs)} a question${t.firstMs !== null && t.firstMs - t.bestMs >= 1000 ? `, ${secs(t.firstMs - t.bestMs)} quicker than the first go` : ""}`
-                      : t.answered > 0
-                        ? `${t.right} of ${t.answered} right so far${t.avgMs ? ` · ${secs(t.avgMs)} a question` : ""}`
-                        : TOPICS.find((x) => x.id === t.id)!.line}
+      {(["Maths", "Physics"] as const).map((subject) => (
+        <section key={subject} className="stack" style={{ gap: 4 }}>
+          <h2>{subject}</h2>
+          <div className="card list" style={{ padding: "4px 18px" }}>
+            {d.calc.topics.filter((t) => TOPICS.find((x) => x.id === t.id)!.subject === subject).map((t) => (
+              <Link key={t.id} href={`/speed/${t.id}`}>
+                <div className="row" style={{ justifyContent: "space-between", flexWrap: "nowrap", alignItems: "flex-start" }}>
+                  <span>
+                    <span className="t">{t.label}</span>
+                    <br />
+                    <span className="muted tiny">
+                      {t.step !== null
+                        ? `Step ${t.step} of 8 · ${t.right} of ${t.answered} right so far${t.avgMs ? ` · ${secs(t.avgMs)} a question` : ""}`
+                        : t.bestMs !== null
+                          ? `Best ${secs(t.bestMs)} a question${t.firstMs !== null && t.firstMs - t.bestMs >= 1000 ? `, ${secs(t.firstMs - t.bestMs)} quicker than the first go` : ""}`
+                          : t.answered > 0
+                            ? `${t.right} of ${t.answered} right so far${t.avgMs ? ` · ${secs(t.avgMs)} a question` : ""}`
+                            : TOPICS.find((x) => x.id === t.id)!.line}
+                    </span>
                   </span>
-                </span>
-                <span className="stack" style={{ gap: 6, alignItems: "flex-end" }}>
-                  <span className={TAG[t.status].cls}>{TAG[t.status].label}</span>
-                  <span className="sp-pips" title={t.level ?? "No best yet"} aria-label={t.level ? `Level: ${t.level}` : "No level yet"}>
-                    {LEVEL_NAMES.map((n, i) => <i key={n} className={i < t.pips ? "on" : ""} />)}
+                  <span className="stack" style={{ gap: 6, alignItems: "flex-end" }}>
+                    <span className={TAG[t.status].cls}>{TAG[t.status].label}</span>
+                    <span className="sp-pips" title={t.level ?? "No level yet"} aria-label={t.level ? `Level: ${t.level}` : "No level yet"}>
+                      {LEVEL_NAMES.map((n, i) => <i key={n} className={i < t.pips ? "on" : ""} />)}
+                    </span>
                   </span>
-                </span>
-              </div>
-            </Link>
-          ))}
-        </div>
-        <p className="muted tiny" style={{ margin: 0 }}>Levels: Warm-up, Steady, Quick, Sharp. A level comes from your fastest drill with at least 8 of 10 right.</p>
-      </section>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ))}
+      <p className="muted tiny" style={{ margin: 0 }}>Steps run from 1 to 8 and move after every answer. Levels follow your step: Warm-up (1 to 2), Steady (3 to 4), Quick (5 to 6), Sharp (7 to 8).</p>
     </div>
   );
 }

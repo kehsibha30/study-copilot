@@ -2,8 +2,13 @@
 // screen, "What to work on" and the Report. Nothing here calls an AI.
 
 import { TOPICS, cardById, type Level, type TopicId } from "./cards";
+import { stepOf } from "./ladder";
 
-export type SpeedQ = { card: string; topic: TopicId; level: Level; q: string; a: string; how: string };
+// A question made by a card (typed answer), or taken from the question bank (opts = the choices, a = the right letter).
+export type SpeedQ = { card: string; topic: TopicId; level: Level; q: string; a: string; how: string; opts?: string[]; bank?: string };
+// What a student typed or tapped, as words: a bank question stores a letter, which reads back as the option's text.
+export const answerWords = (q: SpeedQ, said: string) => (q.opts ? (q.opts["abcdef".indexOf(said.toLowerCase())] ?? "") : said);
+export const keyWords = (q: SpeedQ) => (q.opts ? (q.opts["abcdef".indexOf(q.a)] ?? q.a) : q.a);
 export type Mark = "right" | "wrong" | "skipped";
 export type RunResult = {
   right: number;
@@ -18,13 +23,21 @@ export type RunResult = {
   newBest: boolean;
   prevAvgMs: number | null; // the run before this one on the same topic
   prevBestMs: number | null;
+  // Adaptive sets only:
+  startStep?: number; // the step he began the set at (his step from the set before)
+  endStep?: number; // his step after the last answer
+  endAbility?: number; // the hidden number behind endStep; the next set starts from it
+  topStep?: number; // the hardest step he answered right in this set
+  prevTopStep?: number | null; // the hardest step reached in an earlier good set (7 or more right)
 };
 export type SpeedRun = {
   id: string;
   createdAt: string;
-  kind: "topic" | "card" | "daily";
+  kind: "topic" | "card" | "daily" | "adaptive";
   topic: TopicId | null;
   card?: string;
+  // Adaptive sets: the next question is made after each answer, so these live with the run.
+  adaptive?: { seed: number; ability: number; startAbility: number; size: number; used: string[] };
   questions: SpeedQ[];
   answers?: Record<string, string>;
   times?: Record<string, number>;
@@ -54,12 +67,24 @@ export type CalcTopic = {
   lastAvgMs: number | null;
   prevAvgMs: number | null;
   pips: number; // 0 to 4
+  step: number | null; // his step now (adaptive sets), 1 to 8
+  startStep: number | null; // the step of his first adaptive set
+  topStep: number | null; // the hardest step he has answered right in a good set
+  sets: number; // finished adaptive sets
   level: string | null;
   status: CalcStatus;
   lastAt: string | null;
 };
 export type CalcWrong = { topic: TopicId; label: string; card: string; cardTitle: string; q: string; said: string; a: string; how: string; at: string };
 export type Calc = { runs: number; days: string[]; topics: CalcTopic[]; wrong: CalcWrong[] };
+
+// His hidden ability on a topic, from the latest finished adaptive set. A new topic starts at 1.
+export function abilityFor(runs: SpeedRun[], topic: TopicId): number {
+  const done = runs.filter((r) => r.kind === "adaptive" && r.topic === topic && r.submittedAt && r.result?.endAbility !== undefined).sort((a, b) => b.submittedAt!.localeCompare(a.submittedAt!));
+  if (done.length) return done[0].result!.endAbility!;
+  // No adaptive set yet: a topic he already passed with the old fixed drill (8 of 10 right on levels 1 to 3) starts at Step 3, not Step 1.
+  return runs.some((r) => r.kind === "topic" && r.topic === topic && r.result?.qualifying) ? 3 : 1;
+}
 
 export function pipsFor(bestMs: number | null, targetMs: number): number {
   if (bestMs === null) return 0;
@@ -97,7 +122,7 @@ export function calcFrom(runs: SpeedRun[]): Calc {
           if (mark === "right") right++;
           else {
             bad++;
-            wrong.push({ topic: t.id, label: t.label, card: q.card, cardTitle: cardById(q.card)?.title ?? "", q: q.q, said: run.answers![String(i)] ?? "", a: q.a, how: q.how, at: run.submittedAt! });
+            wrong.push({ topic: t.id, label: t.label, card: q.card, cardTitle: q.bank ? "Question bank" : (cardById(q.card)?.title ?? ""), q: q.q, said: answerWords(q, run.answers![String(i)] ?? ""), a: keyWords(q), how: q.how, at: run.submittedAt! });
           }
         }
       });
@@ -110,7 +135,12 @@ export function calcFrom(runs: SpeedRun[]): Calc {
     const qualifying = fulls.filter((r) => r.result!.qualifying);
     const bestMs = qualifying.length ? Math.min(...qualifying.map((r) => r.result!.avgMs)) : null;
     const avgMs = timed ? Math.round(ms / timed) : null;
-    const pips = pipsFor(bestMs, t.targetMs);
+    const sets = done.filter((r) => r.kind === "adaptive" && r.topic === t.id);
+    const lastSet = sets.length ? sets[sets.length - 1].result! : null;
+    const step = lastSet?.endAbility !== undefined ? stepOf(lastSet.endAbility) : null;
+    const tops = sets.map((r) => r.result!.topStep ?? 0).filter((x, i) => (sets[i].result!.right ?? 0) >= 7 && x > 0);
+    // With adaptive sets the level follows his step (1-2 Warm-up, 3-4 Steady, 5-6 Quick, 7-8 Sharp); before that, his fastest drill.
+    const pips = step !== null ? Math.max(1, Math.ceil(step / 2)) : pipsFor(bestMs, t.targetMs);
     const acc = answered ? right / answered : 0;
     let status: CalcStatus = "new";
     if (answered > 0) {
@@ -133,6 +163,10 @@ export function calcFrom(runs: SpeedRun[]): Calc {
       lastAvgMs: fulls.length ? fulls[fulls.length - 1].result!.avgMs : null,
       prevAvgMs: fulls.length > 1 ? fulls[fulls.length - 2].result!.avgMs : null,
       pips,
+      step,
+      startStep: sets.length ? (sets[0].result!.startStep ?? null) : null,
+      topStep: tops.length ? Math.max(...tops) : null,
+      sets: sets.length,
       level: pips ? LEVEL_NAMES[pips - 1] : null,
       status,
       lastAt,

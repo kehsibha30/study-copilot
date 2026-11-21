@@ -319,3 +319,15 @@ details.topic .inner { padding: 0 0 16px; font-size: 15px; color: var(--muted); 
 .rule { background: var(--good-soft); color: var(--good-ink); border-radius: 10px; padding: 11px 14px; font-weight: 500; margin: 0 0 16px; }
 .qfold { padding: 12px 16px; }
 .qfold summary { cursor: pointer; }
+.sp-ladder { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; }
+.sp-ladder span { height: 30px; border-radius: 6px; border: 1px solid var(--line); background: #fbf8f4; font-size: 13px; display: flex; align-items: center; justify-content: center; color: #8a8178; }
+.sp-ladder span.from { border-color: #b9ad9f; color: #3d3730; background: #fff; }
+.sp-ladder span.on { background: var(--accent-soft); border-color: var(--accent); color: var(--good-ink); font-weight: 500; }
+.sp-rows > div { display: flex; justify-content: space-between; padding: 9px 0; border-top: 1px solid var(--line); font-size: 15px; }
+.sp-rows > div span { color: #6d655d; }
+.sp-rows > div b { font-weight: 500; }
+.sp-look > summary { cursor: pointer; font-size: 15px; padding: 9px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.sp-opt { display: flex; gap: 12px; align-items: center; text-align: left; width: 100%; font: inherit; font-size: 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; cursor: pointer; }
+.sp-opt:hover { border-color: #b9ad9f; }
+.sp-opt b { font-weight: 500; color: #8a8178; text-transform: uppercase; min-width: 18px; }
+.sp-opt.on { border-color: var(--accent); background: var(--accent-soft); }

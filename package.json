@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "check:speed": "node --experimental-strip-types scripts/check-speed.mts",
-    "check:keys": "node --experimental-strip-types scripts/check-keys.mts"
+    "check:keys": "node --experimental-strip-types scripts/check-keys.mts",
+    "check:ladder": "node --experimental-strip-types scripts/check-ladder.mts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",

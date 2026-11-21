@@ -1,7 +1,7 @@
 import { connection } from "next/server";
 import { TOPICS, type TopicId } from "@/lib/speed/cards";
 import { calcFrom, suggested } from "@/lib/speed/stats";
-import { listRuns, startRun } from "@/lib/speed/run";
+import { listRuns, startAdaptive, startRun } from "@/lib/speed/run";
 
 // The Speed home: one row per topic, worked out from his finished drills each time. Costs nothing (no AI).
 export async function GET() {
@@ -20,16 +20,21 @@ export async function POST(request: Request) {
   }
   const topic = TOPICS.find((t) => t.id === body.topic)?.id ?? null;
   const card = typeof body.card === "string" ? body.card : undefined;
-  if (body.kind === "topic" && !topic) return Response.json({ error: "Pick a topic first." }, { status: 400 });
-  if (body.kind !== "topic" && body.kind !== "card" && body.kind !== "daily") return Response.json({ error: "Pick a drill first." }, { status: 400 });
+  if ((body.kind === "topic" || body.kind === "adaptive") && !topic) return Response.json({ error: "Pick a topic first." }, { status: 400 });
+  if (body.kind !== "topic" && body.kind !== "card" && body.kind !== "daily" && body.kind !== "adaptive") return Response.json({ error: "Pick a drill first." }, { status: 400 });
   try {
+    if (body.kind === "adaptive") {
+      const set = await startAdaptive(topic!);
+      return Response.json({ id: set.id });
+    }
     // Today's round starts with the topics he has done least, then the slowest.
     const calc = calcFrom(await listRuns());
     const target = (id: TopicId) => TOPICS.find((t) => t.id === id)!.targetMs;
     const weakFirst = [...calc.topics]
       .sort((a, b) => (a.answered === 0 ? -9 : -(a.avgMs ?? 0) / target(a.id)) - (b.answered === 0 ? -9 : -(b.avgMs ?? 0) / target(b.id)))
       .map((t) => t.id);
-    const run = await startRun(body.kind, topic, card, weakFirst);
+    const steps = Object.fromEntries(calc.topics.filter((t) => t.step !== null).map((t) => [t.id, t.step as number]));
+    const run = await startRun(body.kind, topic, card, weakFirst, steps);
     return Response.json({ id: run.id });
   } catch (error) {
     console.error("[speed] could not start a drill", error);

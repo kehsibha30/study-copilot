@@ -49,14 +49,18 @@ export default function SpeedTopic({ topic }: { topic: string }) {
         <Link href="/speed" className="muted tiny">← Speed</Link>
         <h1 style={{ marginTop: 6 }}>{info.label}</h1>
         <p className="lede">{info.line}</p>
-        {mine && mine.bestMs !== null && <p className="muted tiny" style={{ margin: "8px 0 0" }}>Your best: {secs(mine.bestMs)} a question{mine.level ? ` · ${mine.level}` : ""}.</p>}
+        {mine && mine.step !== null ? (
+          <p className="muted tiny" style={{ margin: "8px 0 0" }}>You are at Step {mine.step} of 8{mine.level ? ` · ${mine.level}` : ""}.{mine.startStep !== null && mine.step > mine.startStep ? ` You started at Step ${mine.startStep}.` : ""}</p>
+        ) : (
+          mine && mine.bestMs !== null && <p className="muted tiny" style={{ margin: "8px 0 0" }}>Your best: {secs(mine.bestMs)} a question{mine.level ? ` · ${mine.level}` : ""}.</p>
+        )}
       </div>
 
       <div className="stack" style={{ gap: 6 }}>
-        <button type="button" className="btn wide" disabled={busy !== null || navigating} onClick={() => start({ kind: "topic", topic: info.id }, "topic")}>
-          {busy === "topic" ? "Getting your questions ready…" : "Start the 10-question drill"}
+        <button type="button" className="btn wide" disabled={busy !== null || navigating} onClick={() => start({ kind: "adaptive", topic: info.id }, "topic")}>
+          {busy === "topic" ? "Getting your questions ready…" : mine && mine.step !== null ? `Start 10 questions at Step ${mine.step}` : "Start your first 10 questions"}
         </button>
-        <span className="muted tiny" style={{ textAlign: "center" }}>Read a shortcut below first, or jump straight in.</span>
+        <span className="muted tiny" style={{ textAlign: "center" }}>The questions get harder as you get them right. Read a shortcut below first, or jump straight in.</span>
       </div>
       {error && <div className="error" role="alert">{error}</div>}
 
